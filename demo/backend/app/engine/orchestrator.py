@@ -182,12 +182,38 @@ class Orchestrator:
                 try:
                     llm_ir = self.gateway.plan_ir(
                         question, self.semantic, session_store.summary(session_ctx), options)
-                    if llm_ir is not None:
+                    if isinstance(llm_ir, dict) and str(llm_ir.get("unsupportable") or "").strip():
+                        # 逃生口1(§17):LLM 诚实拒答 —— 问题超出语义层可表达范围
+                        # (跨筛选组对比/预测/无指标),宁可拒答也不给语义漂移的数字
+                        card = self._unsupportable_card(trace_id,
+                                                        str(llm_ir["unsupportable"]))
+                        status = "error"
+                        ir = None
+                        llm_used = True
+                        llm_model = self.gateway.get_config().get("model")
+                    elif isinstance(llm_ir, dict) and llm_ir.get("clarify"):
+                        # 逃生口2(§17):LLM 判定问法模糊 → 复用 clarify 卡(时间选项+assume_note)
+                        card = self._clarify_card(trace_id)
+                        status = "clarify"
+                        ir = None
+                        llm_used = True
+                        llm_model = self.gateway.get_config().get("model")
+                    elif llm_ir is not None:
                         cand = compiler.normalize_ir(llm_ir)
                         ok, err = compiler.validate_ir(cand, self.semantic, options)
+                        future_reason = None
+                        if ok:
+                            ok, cand, future_reason = self._guard_future_time(cand, asof)
                         if ok:
                             ir = cand
                             source = "llm"
+                            llm_used = True
+                            llm_model = self.gateway.get_config().get("model")
+                        elif future_reason:
+                            # §17 数据水位防线:整个查询窗口晚于数据水位 → 确定性诚实拒答
+                            card = self._unsupportable_card(trace_id, future_reason)
+                            status = "error"
+                            ir = None
                             llm_used = True
                             llm_model = self.gateway.get_config().get("model")
                         else:
@@ -195,7 +221,8 @@ class Orchestrator:
                 except Exception as e:
                     logger.warning("llm planner failed: %s", e)
 
-            if ir is None:
+            if card is None and ir is None:
+                # LLM 逃生口已出卡(unsupportable/clarify)时不回退规则路径
                 if not parsed.get("ok"):
                     card = self._error_card(trace_id)
                     status = "error"
@@ -221,8 +248,10 @@ class Orchestrator:
         if card is not None:
             timings["understand"] = _ms(t0)
             timings["plan"] = _ms(t_plan)
+            clarify_note = bool((card or {}).get("assume_note"))
             yield ("stage", {"step": "understand", "label": "理解问题", "status": "done",
                              "detail": ("该问题暂无法映射到现有指标" if status == "error"
+                                        else "需要先确认时间范围" if clarify_note
                                         else "需要先确认分析维度")})
             yield ("stage", {"step": "query", "label": "查询数据", "status": "start",
                              "detail": "该问题无需查询数据"})
@@ -266,6 +295,11 @@ class Orchestrator:
         prev_label = self._prev_label(ir_time.get("preset"), ir.get("compare"))
         metric_name = sem.metric_name(ir["metric"])
         card_kind = (parsed.get("card") if parsed.get("ok") else None) or self._card_kind_from_ir(ir)
+        # §17:LLM 模式下,规则判为汇总但 LLM IR 显式给出拆分维度时以 IR 为准
+        # (修复「哪个类目最高/前N」被降级成整体汇总的语义漂移;规则模式不受影响,
+        #  compare/attribution/overview 等规则意图仍以规则为准 —— IR 无法表达这些卡)
+        if source == "llm" and card_kind == "summary" and (ir.get("dims") or []):
+            card_kind = self._card_kind_from_ir(ir)
         dim_label = {"category": "类目", "channel": "渠道", "product": "商品"}.get(
             (parsed or {}).get("dim") or "", "类目")
 
@@ -1210,6 +1244,68 @@ class Orchestrator:
         ]
         c["followups"] = ["最近30天GMV走势", "近30天退款率为什么上升", "最近30天各类目GMV"]
         return c
+
+    def _unsupportable_card(self, trace_id: str, reason: str = "") -> dict:
+        """§17 逃生口:LLM 判定问题超出语义层可表达范围(跨筛选组对比/预测/无指标)
+        时的诚实拒答卡;narrative = 原因 + 能答什么的提示。"""
+        c = self._base_card("error", trace_id, "这个问题我答不了")
+        c["narrative"] = [
+            (reason or "这个问题超出了当前语义层能表达的范围。").strip(),
+            "我可以回答交易域问题:GMV、订单数、支付人数、客单价、支付件数、退款金额、退款率、"
+            "新客订单占比,支持按类目/渠道/新老客筛选,以及类目、商品的排名对比。",
+        ]
+        c["followups"] = ["最近30天GMV走势", "最近30天哪个类目GMV最高", "各类目GMV排名"]
+        return c
+
+    @staticmethod
+    def _guard_future_time(ir: dict, asof) -> tuple[bool, dict, str | None]:
+        """§17 数据水位防线(LLM 模式专用):IR time.range 不得晚于 data_as_of。
+
+        - 整个窗口晚于水位 → (False, ir, 原因),调用方出诚实拒答卡(不给查空数据);
+        - 部分超出 → 止日截断到水位(与双十一截断规则一致);compare 显式窗口同理
+          (整个晚于水位 → 丢弃对比,部分超出 → 截断)。
+        规则路径不经此函数,既有行为零变化。
+        """
+        if asof is None:
+            return True, ir, None
+        try:
+            asof_d = asof if isinstance(asof, dt.date) else dt.date.fromisoformat(str(asof)[:10])
+        except ValueError:
+            return True, ir, None
+        t = ir.get("time") or {}
+        rng = t.get("range") if isinstance(t, dict) else None
+        if isinstance(rng, list) and len(rng) == 2:
+            try:
+                s = dt.date.fromisoformat(str(rng[0])[:10])
+                e = dt.date.fromisoformat(str(rng[1])[:10])
+            except ValueError:
+                return True, ir, None
+            if s > asof_d:
+                return False, ir, (
+                    f"该时间段({s.isoformat()}~{e.isoformat()})晚于数据截至日 "
+                    f"{asof_d.isoformat()},数据还没有发生,无法查询。")
+            if e > asof_d:
+                t = dict(t)
+                t["range"] = [rng[0], asof_d.isoformat()]
+                ir = dict(ir)
+                ir["time"] = t
+        c = ir.get("compare")
+        if isinstance(c, dict) and isinstance(c.get("range"), list) and len(c["range"]) == 2:
+            try:
+                cs = dt.date.fromisoformat(str(c["range"][0])[:10])
+                ce = dt.date.fromisoformat(str(c["range"][1])[:10])
+            except ValueError:
+                cs = ce = None
+            if cs and ce:
+                if cs > asof_d:
+                    ir = dict(ir)
+                    ir["compare"] = "none"
+                elif ce > asof_d:
+                    c2 = dict(c)
+                    c2["range"] = [c["range"][0], asof_d.isoformat()]
+                    ir = dict(ir)
+                    ir["compare"] = c2
+        return True, ir, None
 
     # ================= 审计 =================
 
