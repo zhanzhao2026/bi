@@ -28,6 +28,7 @@
 | [07-安全权限与合规.md](07-安全权限与合规.md) | RBAC、行列权限注入、SQL 安全防线、审计、LLM 数据边界 | 安全/数据 |
 | [08-开发计划.md](08-开发计划.md) | 五阶段计划、里程碑、团队分工、依赖、风险登记册、预算 | 管理层/PM |
 | [09-专项调研-帆软Dora与开源ChatBI选型评估.md](09-专项调研-帆软Dora与开源ChatBI选型评估.md) | 帆软 Dora 与开源 ChatBI(SuperSonic/Wren AI/DB-GPT/SQLBot 等)深评、三路线对比、适配性判定 | 管理层/架构 |
+| [10-UI交互原型设计.md](10-UI交互原型设计.md) | MVP 可交互网页原型([prototype/](../prototype/bizinsight-chat-ui-prototype.html)):用户视角(零技术元素)+ 后台管理视角(6 页),设计决策、答案卡解剖、交互规格与里程碑映射 | 管理层/前端 |
 
 ## 4. 关键结论摘要
 
