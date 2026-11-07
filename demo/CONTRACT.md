@@ -1,0 +1,254 @@
+# Demo 系统实现契约(v1 · 交易域)
+
+> 本文档是多代理并行实现的**唯一权威契约**。所有模块必须严格按本文档实现接口与数据结构。
+> 范围:**只做交易域**。流量/UV/CVR、库存、营销费用等不在 v1 范围。
+
+## 0. 环境事实(已验证)
+
+| 项 | 值 |
+|---|---|
+| MySQL | Docker 容器 `hanzipress-mysql`(mysql:8.4.11),`127.0.0.1:3306`,已运行 |
+| 管理账号 | `root` / `root`(仅初始化用) |
+| 应用账号 | `appuser` / `apppass`(应用运行时使用,`init_db.py` 负责 GRANT) |
+| Python | 3.14.4(系统无 pip,venv 已建好:`/home/link/code/bi/demo/backend/.venv`,内含 pip) |
+| Node | v22.22.1 / npm 9.2.0,网络可访问 npm registry |
+| 端口 | 后端 `8310`(FastAPI/uvicorn),前端 dev `5174`(Vite,proxy /api→8310);生产:后端托管 `frontend/dist`,单地址 `http://127.0.0.1:8310` |
+| 项目根 | `/home/link/code/bi/demo/`(各代理只允许写自己模块的子目录) |
+| 今天 | 2026-11-07;数据 T+1,**data_as_of = 2026-11-06** |
+
+## 1. 项目结构
+
+```
+demo/
+├── CONTRACT.md              # 本契约
+├── db/                      # 【代理A·数据层】
+│   ├── init_db.py           # 建库建表+GRANT(用 root 连)
+│   ├── seed_data.py         # 造数(固定随机种子 42)
+│   ├── verify.py            # 校验故事线指标,全部 PASS 才算完成
+│   └── run_all.sh           # python init_db.py && python seed_data.py && python verify.py
+├── backend/                 # 【代理B·后端】
+│   ├── .venv/               # 已建好,依赖见 requirements.txt(已安装)
+│   ├── requirements.txt
+│   ├── .env / .env.example
+│   ├── semantic/metrics.yaml
+│   └── app/                 # FastAPI 应用(uvicorn app.main:app --port 8310)
+├── frontend/                # 【代理C·前端】Vite + React + TS + ECharts
+├── scripts/
+│   ├── run_backend.sh
+│   └── run_frontend.sh
+└── docs/README.md           # 集成阶段由主控编写
+```
+
+## 2. 数据层规格(代理A)
+
+### 2.1 建库与账号
+- `CREATE DATABASE IF NOT EXISTS biz_demo DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`
+- `CREATE USER IF NOT EXISTS 'appuser'@'%' IDENTIFIED BY 'apppass'; GRANT ALL ON biz_demo.* TO 'appuser'@'%'; FLUSH PRIVILEGES;`
+
+### 2.2 表结构(DDL,严格照此)
+
+```sql
+dim_date     (d DATE PK, dow TINYINT, is_weekend TINYINT(1), month CHAR(7))
+dim_category (category_id TINYINT PK, category_name VARCHAR(32), sort INT)
+dim_channel  (channel_id TINYINT PK, channel_name VARCHAR(32))
+dim_product  (product_id INT PK, product_name VARCHAR(64), category_id TINYINT, price DECIMAL(10,2))
+dim_user     (user_id INT PK, reg_date DATE)
+fact_order   (
+  order_id BIGINT PK, pay_date DATE NOT NULL, product_id INT NOT NULL,
+  category_id TINYINT NOT NULL, channel_id TINYINT NOT NULL, user_id INT NOT NULL,
+  user_type VARCHAR(4) NOT NULL,          -- '新客'/'老客':该用户首次付款日=本单日→新客
+  item_cnt INT NOT NULL,
+  pay_amount DECIMAL(12,2) NOT NULL,       -- 付款金额(退款不扣减)
+  refund_amount DECIMAL(12,2) NOT NULL DEFAULT 0,
+  is_refund TINYINT(1) NOT NULL DEFAULT 0, -- 1=有退款发生(仅退款或退货退款)
+  KEY idx_date (pay_date), KEY idx_cat (category_id, pay_date), KEY idx_user (user_id)
+)
+audit_log    (
+  id BIGINT PK AUTO_INCREMENT, trace_id VARCHAR(24), ts DATETIME, session_id VARCHAR(40),
+  demo_user VARCHAR(32), question TEXT, intent VARCHAR(32), metric_key VARCHAR(32),
+  ir_json TEXT, sql_text TEXT, row_count INT, result_json TEXT, narrative TEXT,
+  llm_used TINYINT(1), llm_model VARCHAR(64), latency_ms INT, stage_timings TEXT,
+  status VARCHAR(16) DEFAULT 'ok',   -- ok / clarify / refuse / boundary / error
+  KEY idx_ts (ts), KEY idx_sess (session_id)
+)
+feedback_log (id BIGINT PK AUTO_INCREMENT, ts DATETIME, trace_id VARCHAR(24), session_id VARCHAR(40),
+  demo_user VARCHAR(32), rating VARCHAR(4), tags TEXT, comment TEXT)
+golden_qa    (id INT PK AUTO_INCREMENT, question TEXT, kind VARCHAR(12),   -- value/trend/rank/compare/attribution/clarify/refuse/boundary
+  expect_metric VARCHAR(32), expect_dims TEXT, ref_sql TEXT, ref_value DECIMAL(18,4) NULL,
+  tolerance_pct DECIMAL(5,2) DEFAULT 2.0, tag VARCHAR(16))
+semantic_version (id INT PK AUTO_INCREMENT, version INT, released DATE, author VARCHAR(32),
+  change_desc TEXT, yaml_snapshot LONGTEXT)
+eval_history (id BIGINT PK AUTO_INCREMENT, ts DATETIME, mode VARCHAR(8), pass_rate DECIMAL(5,2),
+  total INT, passed INT, report_json LONGTEXT)
+sys_settings (skey VARCHAR(32) PK, svalue TEXT)
+```
+
+### 2.3 维度取值
+- 类目 7 个(按 sort):美妆 / 女装 / 数码 / 家居 / 食品 / 母婴 / 运动
+- 渠道 4 个:直播 / 自然流量 / 私域 / 付费推广(用户提问用词:直播、私域、自然流量、付费/推广)
+- 商品:每类目 8~12 个,中文商品名(如"水光焕颜精华液 30ml"),价格带:美妆 80-300、女装 100-400、数码 500-3000、家居 150-800、食品 30-80、母婴 60-250、运动 120-500
+
+### 2.4 造数范围与故事线(必须全部命中,verify.py 逐一校验)
+- 日期:2026-08-09 ~ 2026-11-06(90 天);窗口定义:last30 = 2026-10-08~11-06,prior30 = 2026-09-08~10-07
+- 订单量:日均约 2300 单(总量约 20.7 万行);用户 5.5 万人;随机种子固定 42,结果可复现
+- 季节性:周末 GMV ×1.2,日常 ±10% 噪声
+- **故事线 1 · 类目 GMV 变化**(last30 vs prior30,容差 ±1.5pp):
+  美妆 +26.0%、家居 +23.6%、食品 +18.0%、母婴 -3.5%、运动 -6.1%、女装 -9.2%、数码 -18.4%,整体约 +5%
+- **故事线 2 · 退款率上升**(last30 vs prior30,容差 ±0.1pp):
+  整体 2.4% → 2.8%(+0.4pp),由美妆驱动(美妆约 2.0% → 4.0%,贡献约 +0.4pp,其他类目基本持平 ±0.05pp)
+  实现:美妆 last30 内 3 款"问题商品"(指定 product,退款概率 12%~20%)拉高整类目;退款金额 = 付款金额 × 0.7~1.0
+- **故事线 3 · 渠道结构**:直播 35%、自然流量 30%、私域 20%、付费推广 15%(容差 ±3pp)
+- **故事线 4 · 新客订单占比**:last30 约 24%~28%
+- AOV(客单价)预期 140~220 元(只报告,不强制)
+
+### 2.5 golden_qa(种子时用 ref_sql **实时计算** ref_value 写入)
+至少 16 条,覆盖:value(GMV/客单价/支付人数/退款金额/订单数,含 last_30d/yesterday/last_month/只看美妆/只看直播)、trend、rank(类目 GMV、类目退款率)、compare(新老客)、attribution(退款率归因)、clarify(「销售额怎么样」)、refuse(「员工平均工资」)、boundary(「看下具体订单明细」)。question 用口语化中文。
+
+### 2.6 其他种子数据
+- `semantic_version`:v10(2026-09-12,初版语义层)、v11(2026-10-18,退款率口径说明补充"含仅退款")、v12(2026-11-06,当前,分母统一为同范围 GMV)
+- `audit_log`:预置 6~8 条近几日的演示记录(含 1 条 status='clarify'、1 条 'refuse',trace_id 形如 `tr_1a2b3c4d`)
+- `sys_settings`:llm_base_url=`https://open.bigmodel.cn/api/paas/v4`,llm_model=`glm-4-flash`,llm_api_key=空
+
+### 2.7 verify.py 输出
+逐条打印 PASS/FAIL 及实测值:整体与各故事线指标 + 表行数 + golden_qa 条数。**全部 PASS 后数据层才算完成**,并在最终报告中给出:行数、last30/prior30 GMV 与退款率、各品类 delta 实测、美妆退款率贡献实测、渠道占比、新客占比、AOV。
+
+## 3. 语义层规格(backend/semantic/metrics.yaml,代理B 按此实现加载器)
+
+```yaml
+version: 12
+data_as_of_query: SELECT MAX(pay_date) FROM fact_order
+metrics:
+  gmv:            {name: "GMV",        plain: "用户付款成功的总金额,含后续退款部分,退款不从中扣除。", unit: 元,  agg: "SUM(f.pay_amount)"}
+  order_cnt:      {name: "支付订单数",  plain: "付款成功的订单数量,按订单去重。", unit: 单, agg: "COUNT(DISTINCT f.order_id)"}
+  pay_user_cnt:   {name: "支付人数",    plain: "付款成功的去重用户数,同一人多笔订单只算一次。", unit: 人, agg: "COUNT(DISTINCT f.user_id)"}
+  arppu:          {name: "客单价",      plain: "客单价 = GMV ÷ 支付人数,同一人买多件只算一次人头。", unit: 元/人, agg: "SUM(f.pay_amount)/NULLIF(COUNT(DISTINCT f.user_id),0)", derived: true}
+  item_cnt:       {name: "支付件数",    plain: "付款成功的商品件数合计。", unit: 件, agg: "SUM(f.item_cnt)"}
+  refund_amt:     {name: "退款金额",    plain: "已发生的退款总额,含仅退款与退货退款。", unit: 元, agg: "SUM(f.refund_amount)"}
+  refund_rate:    {name: "退款率",      plain: "退款率 = 退款金额 ÷ GMV,两边按同一时间与同一范围统计。", unit: "%", agg: "SUM(f.refund_amount)/NULLIF(SUM(f.pay_amount),0)", ratio: true, derived: true, higher_is_bad: true}
+  refund_order_rate: {name: "订单退款率", plain: "发生退款的订单数 ÷ 支付订单数。", unit: "%", agg: "SUM(f.is_refund)/NULLIF(COUNT(DISTINCT f.order_id),0)", ratio: true, derived: true, higher_is_bad: true}
+  new_order_ratio: {name: "新客订单占比", plain: "新客(当日首次付款用户)下的订单占全部订单的比例。", unit: "%", agg: "SUM(f.user_type='新客')/NULLIF(COUNT(DISTINCT f.order_id),0)", ratio: true, derived: true}
+dims:
+  date:      {column: "f.pay_date", desc: 支付日期}
+  category:  {column: "f.category_id", name_table: dim_category, name_col: category_name, desc: 商品类目, user_terms: [类目,品类]}
+  channel:   {column: "f.channel_id", name_table: dim_channel, name_col: channel_name, desc: 成交渠道, user_terms: [渠道,直播,私域]}
+  user_type: {column: "f.user_type", desc: "用户类型(新客/老客)", user_terms: [新客,老客,新老]}
+time_presets: [yesterday, last_7d, last_30d, this_month, last_month]
+```
+语义版本快照存 `semantic_version.yaml_snapshot`。口径弹层:用户模式用 `plain`,管理模式给 name+plain+SQL+版本。
+
+## 4. IR 规范(编排引擎的中间表示)
+
+```json
+{
+  "metric": "gmv",                          // 必须在 metrics 内,否则澄清/报错
+  "time": {"preset": "last_30d"}            // 或 {"range": ["2026-10-08","2026-11-06"]}
+  ,"dims": ["category"],                    // ⊆ [date, category, channel, user_type]
+  "filters": {"category": ["美妆"], "channel": [], "user_type": []},
+  "granularity": "day",                     // date 维展示粒度:day/none(dims 含 date 时)
+  "compare": "prev_period",                 // prev_period | none
+  "order": "desc", "limit": 10
+}
+```
+校验失败(未知 metric/dim/filter 值)→ 返回 clarify 或 error 卡,绝不猜。
+
+## 5. 编译规则(semantic compiler)
+- 基础模板:`FROM fact_order f`,时间列 `f.pay_date`;date 维 JOIN dim_date 可省(直接 GROUP BY f.pay_date);category/channel 维 JOIN 对应 dim 取中文名
+- 维度展示名:`category→name_col`,date 维格式化为 `MM-DD`
+- **行级权限谓词**(§12)以 AND 注入 WHERE;比率指标分母加 NULLIF 防除零
+- compare=prev_period:同长度窗口平移再查一次,Python 侧合并(不搞 SQL 窗口函数)
+- 大金额输出统一换算"万元"(>10000 元时),比率保留 2 位小数(单位 %)
+
+## 6. 编排管道与 SSE 协议
+流程:`guards → understand(intent) → plan(IR) → compile → execute → verify → narrate → answer`
+用户端四步动画映射:理解问题 / 查询数据 / 交叉核验(核验项数=答案数字个数)/ 生成分析。stage_timings 记录各阶段毫秒。
+
+SSE(`POST /api/chat`,text/event-stream),事件:`stage`、`answer`、`error`、`done`,格式 `event: <name>\ndata: <json>\n\n`。
+- stage data:`{"step":"understand","label":"理解问题","status":"start|done","detail":"退款率上升的原因"}`(detail 是业务话术)
+- answer data:答案卡 JSON(§10);answer 后追加 `done`。
+
+会话上下文(内存 dict,session_id=uuid):记录最近 IR 的 time/filters;追问未指明时间/范围时**继承上一轮**并在叙事中说明"已沿用上一轮的时间范围/类目"。追问 chips 由后端随答案卡给出。
+
+## 7. 守卫规则(顺序执行)
+1. **refuse**:薪酬/工资/薪资/工资条/身份证/手机号/银行卡/社保 → `{"type":"refuse"}`卡
+2. **boundary**:明细/订单列表/具体商品/哪款商品/导出 → `{"type":"boundary"}`卡("商品级明细 v1 未开放",给替代问法:按类目/按渠道汇总)
+3. **clarify**:模糊指标词(销售额/卖得怎么样/业绩)且无时间词 → clarify 卡:时间选项 + assume_note「未指定时我会按 GMV 理解"销售额"」;用户选项通过 chat 请求的 `assume` 字段回传
+4. 正常路径。**所有数字只能来自 SQL 结果集**(叙事模板直接引用计算值);提问与语义层不相关且规则/LLM 都无法映射 → error 卡(坦诚说明 + 能答什么)
+
+## 8. LLM 网关(可配置 token)
+- OpenAI 兼容 `/chat/completions`;httpx,timeout 20s,temperature 0.2
+- 配置优先级:`sys_settings` 表 > `.env`(BIZ_LLM_BASE_URL/BIZ_LLM_API_KEY/BIZ_LLM_MODEL)
+- `llm_enabled` = api_key 非空;**未配置时全链路走规则兜底,演示不中断**
+- 两个角色:①planner:semantic context + 问题(+会话上下文)→ 仅输出 IR JSON(system prompt 带 JSON Schema 约束);②narrator:结果集 JSON → 2~3 句中文结论(禁编造数字,数字必须引用输入)
+- api_key 永不回传前端(GET settings 只给 has_key + 掩码 `sk-***last4`);日志脱敏
+- `POST /api/admin/settings/test` 发一条 1-token 测试消息验证连通性
+
+## 9. 规则兜底意图(无 LLM 时必须可用,≥8 场景)
+退款(走势→trend;类目/原因/为什么→attribution;默认 summary)/ GMV·销售额·成交(走势→trend;排名/类目贡献→rank;渠道→rank(channel);默认 summary)/ 客单价 / 支付人数 / 订单数 / 退款金额 / 新老客对比 / 昨天·上月·最近7天·最近30天 时间解析 / 美妆·女装…类目词解析 / 直播·私域…渠道词解析。关键词命中表写在 `app/engine/rules.py`。
+
+## 10. 答案卡 Schema(前后端唯一数据契约)
+```json
+{
+  "type": "summary|trend|rank|attribution|compare|clarify|refuse|boundary|error",
+  "trace_id": "tr_xxxx", "title": "近30天退款率归因", "data_as_of": "2026-11-06",
+  "assume": {"text": "按 GMV 理解「销售额」"} | null,
+  "narrative": ["近30天整体退款率 2.80%,较上一个30天上升 0.4pp。", "上升主要由美妆类目贡献 +0.41pp……"],
+  "kpis": [{"label":"退款率","value":"2.80%","delta":{"pct":0.4,"dir":"up","label":"较上一个30天","good":false}}],
+  "chart": {"kind":"waterfall","title":"退款率变化归因(pp)","base":{"name":"上一期 2.40"},"items":[{"name":"美妆","value":0.41},{"name":"数码","value":-0.02}],"total":{"name":"当前 2.80"}},
+  "table": {"columns":[{"key":"category","label":"类目"},{"key":"rate","label":"退款率","align":"right"}],"rows":[{"category":"美妆","rate":"4.01%"}]},
+  "caliber": ["refund_rate","gmv"],
+  "scope_note": "以上为相关性线索,建议业务侧进一步确认。" | null,
+  "followups": ["只看美妆的退款率走势", "哪些渠道退款更高"],
+  "context": {"time_preset":"last_30d","category":[]}
+}
+```
+- chart.kind:`line`(趋势,compare 时两条线系列名"本期/上一期")、`bar`、`waterfall`(如上)、`group`(分组对比,如新老客两指标)
+- rank 卡 chart.kind=bar + 完整 table;summary 卡可无 chart;clarify 卡有 `options:[{label,value}]` + `assume_note`
+- narrative 每句一元素;数值全部来自结果集(千分位、万元换算由后端做好)
+
+## 11. API 规范(前缀 /api;除 chat 外均为 JSON)
+| 方法/路径 | 说明 |
+|---|---|
+| GET /api/health | `{status:"ok", db:"ok", data_as_of:"2026-11-06"}` |
+| GET /api/me | `{current:"ceo", users:[{id,name,scope}]}` |
+| POST /api/chat | body `{question, session_id, assume?}` → SSE(§6)。头 `X-Demo-User`(缺省 ceo) |
+| GET /api/quickview | 空态速览:`{data_as_of, kpis:[GMV/退款率/客单价/新客订单占比 last30 vs prior30], alert:{text,question} }`(alert=退款率上升,question 为跳转问法) |
+| GET /api/caliber/{key} | `?mode=user|admin`:user→plain;admin→name+plain+sql+version+updated |
+| POST /api/feedback | `{trace_id, rating:"up|down", tags?:[], comment?}` |
+| GET /api/admin/overview | 今日提问数、近7日趋势(按天 bar)、活跃会话数、平均时延、LLM 使用率、数据水位(表行数+最新日期)、DQC 告警(退款率>3% 类目)、近期错例(status!=ok 前5条) |
+| GET /api/admin/metrics | metrics.yaml 全量:`[{key,name,plain,unit,type,version}]` |
+| GET /api/admin/metrics/{key} | 单指标详情:定义+agg+编译 SQL 示例+版本历史 |
+| GET /api/admin/audit | `?keyword&page&size` 列表(不含 ir/sql 大字段) |
+| GET /api/admin/audit/{trace_id} | 详情:全字段展开(ir_json/sql_text/stage_timings/result_json) |
+| GET /api/admin/eval | golden_qa 列表 + 最近 eval_history 5 次 |
+| POST /api/admin/eval/run | 跑全部 golden_qa(按当前 llm/rule 模式),写 eval_history,返回报告 |
+| GET /api/admin/settings | llm_enabled/base_url/model/has_key/key_masked |
+| PUT /api/admin/settings | 更新 llm_base_url/model/api_key(空串=清除)→ 写 sys_settings |
+| POST /api/admin/settings/test | 实测连通:`{ok,latency_ms,model,reply?|error?}` |
+| GET /api/admin/versions | semantic_version 全量倒序 |
+
+错误统一 `{"detail": "..."}` 400/500。
+
+## 12. RBAC 演示用户(后端内置,前端切换)
+| id | 名称 | 行级范围 |
+|---|---|---|
+| ceo | 张总 · 总经理 | 全部类目 |
+| beauty | 林岚 · 美妆负责人 | `category_id = 美妆`(编译时注入) |
+
+请求头 `X-Demo-User`;未识别 → ceo。权限谓词在编译层注入,审计记录 demo_user。
+
+## 13. 前端规格(代理C)
+- 技术栈:Vite + React 18 + TypeScript(strict) + ECharts 5(npm),无 UI 框架,手写 CSS
+- 视觉语言参考 `/home/link/code/bi/prototype/bizinsight-chat-ui-prototype.html`(提取 token,不要整页照抄):底 `#eef0f5`、白卡、描边 `#e0e3ec`、主色 `#4152e0`、圆角 13px、字号 14、正文行高 1.6;`light-dark()` 双主题;根类名 `biz-demo`
+- **用户视角(默认)**:左侧栏(新对话、最近会话、底部身份切换=§12、管理后台入口),顶部 chip「数据截至 {data_as_of}」;空态=问候 + quickview 4 KPI 卡 + alert 告警卡(点击直接发 alert.question)+ 三组引导问法;消息流=用户气泡 / 答案卡(clarify/refuse/boundary 各有样式)/ 四步处理动画(stage 事件驱动)/ 信任条(「数据已核验」+「数据截至」+ 口径 chip 弹层=GET /api/caliber?mode=user + 👍👎)/ 追问 chips(点击即发送);输入框 Enter 发送
+- **零技术元素铁律**:用户视角不出现 SQL/IR/语义/版本号/耗时等技术词;技术细节只在后台
+- **后台管理**(侧栏切换):①运营总览(真实 overview 数据)②语义管理(指标表+抽屉:定义/agg/编译 SQL/版本历史)③审计日志(列表+keyword 过滤+行展开 trace 详情)④评测(golden 列表+「运行评测」+结果表+历史)⑤系统设置(LLM 表单 base_url/model/token + 测试连接 + 保存;当前模式 徽章「LLM 已接入/规则兜底模式」)
+- SSE 消费:fetch + ReadableStream 手写解析(区分 event/data 行);断线/错误有兜底提示
+- 图表组件:LineChart(双系列)、BarChart、WaterfallChart(base/items/total 悬停增值)、GroupChart;ECharts 按主题色封装,涨跌红绿仅语义色
+- `npm run build` 产出 `frontend/dist`;`vite.config.ts`:port 5174,proxy `/api`→`http://127.0.0.1:8310`
+- 卡片类型≠表格遍历渲染:每 type 有专属版式
+
+## 14. 各代理验收清单
+- **A(数据层)**:`bash db/run_all.sh` 全 PASS;输出故事线实测数字报告
+- **B(后端)**:`.venv/bin/uvicorn app.main:app --port 8310` 可启动;curl 验证 health/quickview/me/chat(SSE 4 事件)/caliber/feedback/全部 admin 端点;至少 8 个规则兜底场景端到端出正确答案卡类型与数字;切 `X-Demo-User: beauty` 行级过滤生效(audit 可见);无 LLM key 时全流程可用;golden eval 跑通
+- **C(前端)**:`npm install && npm run build` 通过;dev server 起后页面可交互(自测:空态渲染、发一问、答案卡渲染、口径弹层、后台五页、设置表单)
+- 通用:不改契约外文件、不 git commit、不动其他模块目录、UI 文案全中文、完成后输出「实现摘要+验证证据+遗留问题」
