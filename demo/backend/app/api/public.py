@@ -6,7 +6,7 @@ from fastapi import APIRouter, Header, HTTPException
 from ..core.config import DEMO_USERS
 from ..core.db import execute, query
 from ..engine import attribution
-from ..engine.cards import fmt_amount, fmt_pct1, make_delta
+from ..engine.cards import fmt_amount, fmt_pct1, fmt_ratio, make_delta
 from ..schemas import FeedbackRequest
 from ..semantic import compiler
 from ..semantic.loader import (get_data_as_of, get_filter_options,
@@ -74,7 +74,7 @@ def quickview(x_demo_user: str | None = Header(default=None)):
     prev = _period_metrics(start_o.isoformat(), end_o.isoformat(), permission)
 
     def kpi(label, key, mode, higher_bad, fmt):
-        d = make_delta(cur.get(key), prev.get(key), mode, higher_bad)
+        d = make_delta(cur.get(key), prev.get(key), mode, higher_bad, label="较上一个30天")
         item = {"label": label, "value": fmt(cur.get(key))}
         if d:
             item["delta"] = d
@@ -82,9 +82,9 @@ def quickview(x_demo_user: str | None = Header(default=None)):
 
     kpis = [
         kpi("GMV", "gmv", "pct", False, fmt_amount),
-        kpi("退款率", "refund_rate", "pp", True, fmt_pct1),
+        kpi("退款率", "refund_rate", "pp", True, fmt_ratio),
         kpi("客单价", "arppu", "pct", False, fmt_amount),
-        kpi("新客订单占比", "new_order_ratio", "pp", False, fmt_pct1),
+        kpi("新客订单占比", "new_order_ratio", "pp", False, fmt_ratio),
     ]
 
     alert = None

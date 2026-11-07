@@ -21,7 +21,7 @@ const KIND_TONES: Record<string, 'blue' | 'purple' | 'teal' | 'orange' | 'green'
 }
 
 function normalize(data: unknown) {
-  const golden = pickList(data, ['golden_qa', 'goldens', 'questions'])
+  const golden = pickList(data, ['golden', 'golden_qa', 'goldens', 'questions'])
   const history = pickList(data, ['eval_history', 'history'])
   return { golden, history }
 }

@@ -79,8 +79,8 @@ export function Btn({ variant, icon, loading, children, ...rest }: {
   return (
     <button
       className={`biz-btn${variant === 'primary' ? ' biz-btn-primary' : ''}`}
-      disabled={loading || rest.disabled}
       {...rest}
+      disabled={loading || rest.disabled}
     >
       {loading ? <span className="biz-spin" /> : icon ? <Icon name={icon} /> : null}
       {children}

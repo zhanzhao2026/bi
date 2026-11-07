@@ -18,6 +18,7 @@ function CaliberChip({ metricKey, open, onToggle, onClose }: {
   onClose: () => void
 }) {
   const wrapRef = useRef<HTMLSpanElement>(null)
+  const fetchedRef = useRef<string | null>(null)
   const [info, setInfo] = useState<CaliberResponse | null>(null)
   const [state, setState] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
   const [up, setUp] = useState(false)
@@ -37,23 +38,21 @@ function CaliberChip({ metricKey, open, onToggle, onClose }: {
   }, [open, onClose])
 
   useEffect(() => {
-    if (!open || state !== 'idle') return
-    let alive = true
+    if (!open) return
+    /* 同一指标只请求一次;失败后允许重试(再次打开时重新请求) */
+    if (fetchedRef.current === metricKey) return
+    fetchedRef.current = metricKey
     setState('loading')
     api<CaliberResponse>(`/api/caliber/${encodeURIComponent(metricKey)}?mode=user`)
       .then((d) => {
-        if (!alive) return
         setInfo(d ?? {})
         setState('ok')
       })
       .catch(() => {
-        if (!alive) return
+        fetchedRef.current = null
         setState('error')
       })
-    return () => {
-      alive = false
-    }
-  }, [open, metricKey, state])
+  }, [open, metricKey])
 
   const name = info?.name || METRIC_NAMES[metricKey] || metricKey
 

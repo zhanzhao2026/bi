@@ -73,6 +73,22 @@ def preset_label(preset: str) -> str:
     }.get(preset, preset or "自定义时间")
 
 
+def time_label(ir_time: dict | None) -> str:
+    """IR time 的人话标签:preset → 固定词;range → 整月"2026年10月"或"起~止"。"""
+    if isinstance(ir_time, dict) and ir_time.get("range"):
+        rng = ir_time["range"]
+        try:
+            s, e = _as_date(rng[0]), _as_date(rng[1])
+            nxt = (e.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
+            last_day = (nxt - dt.timedelta(days=1)).day
+            if s.day == 1 and s.year == e.year and s.month == e.month and e.day == last_day:
+                return f"{s.year}年{s.month}月"
+            return f"{s.isoformat()}~{e.isoformat()}"
+        except Exception:
+            return "/".join(str(x) for x in rng)
+    return preset_label((ir_time or {}).get("preset"))
+
+
 # ---------------- IR 校验与规范化 ----------------
 
 VALID_FILTER_KEYS = {"category", "channel", "user_type"}

@@ -210,6 +210,18 @@ def _value_match(raw: dict, ref_value, tolerance_pct: float) -> tuple[bool, floa
     return False, (cands[0] if cands else None)
 
 
+def _metrics_of(raw: dict) -> set:
+    """答案卡涉及的指标集合(raw.metrics 优先,兼容单 metric 字段)。"""
+    if not raw:
+        return set()
+    ms = raw.get("metrics")
+    if isinstance(ms, list) and ms:
+        return {m for m in ms if isinstance(m, str)}
+    if raw.get("metric"):
+        return {raw["metric"]}
+    return set()
+
+
 @router.get("/admin/eval")
 def eval_list():
     _db_or_503()
@@ -258,16 +270,28 @@ def eval_run():
                 type_ok = card.get("type") in ("summary", "trend", "rank", "attribution", "compare")
                 metric_ok = True
                 if g.get("expect_metric") and g["expect_metric"] in sem.metrics:
-                    metric_ok = (raw or {}).get("metric") == g["expect_metric"]
+                    metric_ok = g["expect_metric"] in _metrics_of(raw or {})
                     if not metric_ok:
-                        item["note"] = f"指标不符: 期望 {g['expect_metric']},实际 {(raw or {}).get('metric')}"
+                        item["note"] = (f"指标不符: 期望 {g['expect_metric']},"
+                                        f"实际 {sorted(_metrics_of(raw or {}))}")
                 value_ok = True
                 if ref_value is not None:
-                    value_ok, got = _value_match(raw or {}, ref_value, g.get("tolerance_pct") or 2.0)
-                    item["got_value"] = got
-                    if not value_ok:
-                        item["note"] = (item["note"] + " " if item["note"] else "") + \
-                                       f"数值不符: 参考值 {ref_value},容差 {g.get('tolerance_pct')}%"
+                    if g["kind"] == "trend":
+                        # trend 参考值 = 走势点数(天数),tolerance_pct=0 要求精确
+                        pts = len((raw or {}).get("rows") or [])
+                        item["got_value"] = pts
+                        tol = float(g.get("tolerance_pct") or 0)
+                        ref = float(ref_value)
+                        value_ok = abs(pts - ref) <= abs(ref) * tol / 100.0
+                        if not value_ok:
+                            item["note"] = (item["note"] + " " if item["note"] else "") + \
+                                           f"走势点数不符: 期望 {int(ref)} 天,实际 {pts} 天"
+                    else:
+                        value_ok, got = _value_match(raw or {}, ref_value, g.get("tolerance_pct") or 2.0)
+                        item["got_value"] = got
+                        if not value_ok:
+                            item["note"] = (item["note"] + " " if item["note"] else "") + \
+                                           f"数值不符: 参考值 {ref_value},容差 {g.get('tolerance_pct')}%"
                 item["passed"] = bool(type_ok and metric_ok and value_ok)
                 if not type_ok:
                     item["note"] = f"卡片类型不符: {card.get('type')}"

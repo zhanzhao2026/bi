@@ -37,26 +37,32 @@ function normalizeList(data: unknown): AuditListNorm {
   return { items, total }
 }
 
-function StageTimings({ raw }: { raw?: string }) {
-  if (!raw) return <p>—</p>
-  try {
-    const obj = JSON.parse(raw) as Record<string, unknown>
-    const entries = Object.entries(obj)
-    if (entries.length) {
-      return (
-        <div className="biz-kv">
-          {entries.map(([k, v]) => (
-            <div key={k}>
-              {k} <b>{typeof v === 'number' ? `${v} ms` : String(v)}</b>
-            </div>
-          ))}
-        </div>
-      )
+function StageTimings({ raw }: { raw?: string | Record<string, unknown> }) {
+  if (raw === undefined || raw === null || raw === '') return <p>—</p>
+  let entries: [string, unknown][] = []
+  if (typeof raw === 'string') {
+    try {
+      const obj = JSON.parse(raw) as Record<string, unknown>
+      if (obj && typeof obj === 'object') entries = Object.entries(obj)
+    } catch {
+      /* 非 JSON 原样展示 */
     }
-  } catch {
-    /* 非 JSON 原样展示 */
+    if (!entries.length) return <pre className="biz-pre">{raw}</pre>
+  } else {
+    entries = Object.entries(raw)
   }
-  return <pre className="biz-pre">{raw}</pre>
+  if (entries.length) {
+    return (
+      <div className="biz-kv">
+        {entries.map(([k, v]) => (
+          <div key={k}>
+            {k} <b>{typeof v === 'number' ? `${v} ms` : String(v)}</b>
+          </div>
+        ))}
+      </div>
+    )
+  }
+  return <pre className="biz-pre">{String(raw)}</pre>
 }
 
 function TraceDetail({ traceId }: { traceId: string }) {
@@ -97,7 +103,7 @@ function TraceDetail({ traceId }: { traceId: string }) {
       </div>
     )
   }
-  const resultJson = tryPretty(detail?.result_json as string | undefined)
+  const resultJson = tryPretty(detail?.result_json)
   return (
     <div className="biz-trace-detail">
       <div className="biz-kv">
@@ -129,11 +135,13 @@ function TraceDetail({ traceId }: { traceId: string }) {
       {detail?.narrative ? (
         <>
           <div className="biz-pre-title">回答摘要</div>
-          <div style={{ marginTop: 6, color: 'var(--c-text2)' }}>{truncate(String(detail.narrative), 300)}</div>
+          <div style={{ marginTop: 6, color: 'var(--c-text2)' }}>
+            {truncate(Array.isArray(detail.narrative) ? detail.narrative.join(' ') : String(detail.narrative), 300)}
+          </div>
         </>
       ) : null}
       <div className="biz-pre-title">IR(中间理解)</div>
-      <pre className="biz-pre">{tryPretty(detail?.ir_json as string | undefined) || '—'}</pre>
+      <pre className="biz-pre">{tryPretty(detail?.ir_json) || '—'}</pre>
       <div className="biz-pre-title">SQL</div>
       <pre className="biz-pre">{String(detail?.sql_text ?? '—')}</pre>
       <div className="biz-pre-title">阶段耗时</div>

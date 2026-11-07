@@ -41,7 +41,8 @@ function MetricDrawer({ metricKey, onClose }: { metricKey: string; onClose: () =
     }
   }, [metricKey])
 
-  const versionsArr = Array.isArray(detail?.versions) ? detail.versions : []
+  const versionsRaw = detail?.versions ?? (detail as Record<string, unknown> | null)?.version_history
+  const versionsArr = Array.isArray(versionsRaw) ? versionsRaw : []
   const sqlText = (detail?.sql ?? detail?.sql_example ?? '') as string
 
   return (

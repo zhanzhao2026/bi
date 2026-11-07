@@ -57,12 +57,13 @@ export function genId(): string {
   return `id_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
 }
 
-/** JSON 字符串尽量格式化(后台展示用) */
-export function tryPretty(s?: string | null): string {
+/** JSON 字符串或已解析对象尽量格式化(后台展示用) */
+export function tryPretty(s?: string | Record<string, unknown> | unknown[] | null): string {
   if (s === null || s === undefined || s === '') return ''
+  if (typeof s === 'object') return JSON.stringify(s, null, 2)
   try {
     const v = JSON.parse(s)
-    return JSON.stringify(v, null, 2)
+    return typeof v === 'object' && v !== null ? JSON.stringify(v, null, 2) : String(s)
   } catch {
     return String(s)
   }

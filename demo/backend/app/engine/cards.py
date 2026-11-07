@@ -63,7 +63,8 @@ def fmt_num1(v) -> str:
     return f"{float(v):.1f}"
 
 
-def make_delta(new, old, mode: str = "pct", higher_is_bad: bool = False):
+def make_delta(new, old, mode: str = "pct", higher_is_bad: bool = False,
+               label: str = "较上一周期"):
     """构造 KPI delta:{pct, dir, label, good}。
 
     mode="pp":比率指标,pct 为百分点差;mode="pct":相对变化百分比。
@@ -84,7 +85,7 @@ def make_delta(new, old, mode: str = "pct", higher_is_bad: bool = False):
         direction, good = "up", not higher_is_bad
     else:
         direction, good = "down", higher_is_bad
-    return {"pct": pct, "dir": direction, "label": "较上一周期", "good": good}
+    return {"pct": pct, "dir": direction, "label": label, "good": good}
 
 
 def line_chart(title: str, x: list, series: list) -> dict:

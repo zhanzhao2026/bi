@@ -220,6 +220,12 @@ export function normalizeChart(spec: ChartSpec | null | undefined): NormChart {
       values = r.values
     }
     if (!values.length) return { kind: 'none' }
+    /* 后端显式给出 x/categories 时优先使用(补齐/截断到与值等长) */
+    const explicitX = strArray(spec.x ?? spec.categories)
+    if (explicitX.length && values.length) {
+      labels = explicitX.slice(0, values.length)
+      while (labels.length < values.length) labels.push('')
+    }
     const x = padLabels(labels, values.length).map((l, i) => l || `第${i + 1}项`)
     return {
       kind: 'bar',
@@ -386,7 +392,7 @@ export function waterfallOption(
 
   return {
     animationDuration: 400,
-    grid: { left: 6, right: 14, top: 14, bottom: 2, containLabel: true },
+    grid: { left: 6, right: 14, top: 34, bottom: 2, containLabel: true },
     tooltip: {
       trigger: 'item',
       ...baseTooltip(t),

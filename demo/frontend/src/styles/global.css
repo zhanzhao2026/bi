@@ -40,8 +40,12 @@ body {
 }
 
 /* ---------- 设计 token ---------- */
-.biz-demo {
+/* color-scheme 声明在 :root 上:默认跟随系统;
+   应用内主题切换由 App 写 documentElement.style.colorScheme 覆盖 */
+:root {
   color-scheme: light dark;
+}
+.biz-demo {
   /* 灯光态兜底(不支持 light-dark() 的浏览器) */
   --c-bg: #eef0f5;
   --c-panel: #ffffff;

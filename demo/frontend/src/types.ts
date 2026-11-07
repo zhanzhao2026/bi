@@ -217,11 +217,11 @@ export interface AuditItem {
 }
 
 export interface AuditDetail extends AuditItem {
-  ir_json?: string
+  ir_json?: string | Record<string, unknown>
   sql_text?: string
-  stage_timings?: string
-  result_json?: string
-  narrative?: string
+  stage_timings?: string | Record<string, unknown>
+  result_json?: string | Record<string, unknown>
+  narrative?: string | string[]
   llm_model?: string
   [k: string]: unknown
 }

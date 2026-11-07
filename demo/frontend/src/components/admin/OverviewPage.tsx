@@ -37,6 +37,19 @@ function normalize(data: unknown): OverviewNorm {
     rows: num(pick(r, ['rows', 'row_count', 'cnt', 'count'])),
     latest: String(pick(r, ['latest', 'latest_date', 'max_date', 'last_date', 'updated']) ?? '—'),
   }))
+  /* 兼容 data_water 为扁平对象的后端形状:{fact_order_rows: 207008, latest_date: "..."} */
+  if (!tables.length) {
+    const waterRaw = (data as { data_water?: unknown } | null)?.data_water
+    if (waterRaw && typeof waterRaw === 'object' && !Array.isArray(waterRaw)) {
+      const o = waterRaw as Record<string, unknown>
+      const latest = String(pick(o, ['latest_date', 'latest', 'max_date', 'last_date']) ?? '—')
+      for (const [k, v] of Object.entries(o)) {
+        if (k.endsWith('_rows')) {
+          tables.push({ name: k.replace(/_rows$/, ''), rows: num(v), latest })
+        }
+      }
+    }
+  }
   const dqc = pickList(data, ['dqc_alerts', 'dqc', 'alerts', 'dqc_warnings']).map((r) => {
     if (typeof r === 'string') return { text: r, tone: 'orange' as const }
     const rate = Number(pick(r, ['rate', 'refund_rate', 'value']) ?? 0)

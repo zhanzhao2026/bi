@@ -1,8 +1,9 @@
 """编排管道(契约 §6/§7/§9/§10):guards → understand → plan(IR) → compile → execute → verify → narrate → answer。
 
-SSE 事件流:stage(理解问题/查询数据/交叉核验/生成分析)→ answer → done。
-所有数字只能来自 SQL 结果集;会话上下文支持追问继承并注明「已沿用上一轮」。
+SSE 事件流:stage(理解问题/查询数据/交叉核验/生成分析,各 start/done)→ answer → done。
+所有数字只能来自 SQL 结果集;会话上下文支持追问继承并注明「已沿用上一轮的时间范围/类目」。
 """
+import datetime as dt
 import json
 import logging
 import time
@@ -24,6 +25,7 @@ logger = logging.getLogger("biz.orchestrator")
 
 DEFAULT_PRESET = "last_30d"
 METRIC_ORDER = {"order_cnt", "pay_user_cnt", "item_cnt"}  # 计数型指标
+FILTER_LABEL = {"category": "类目", "channel": "渠道", "user_type": "新老客"}
 
 
 def _ms(t0: float) -> int:
@@ -73,13 +75,29 @@ class Orchestrator:
                 raw = data
         return card, raw, done
 
-    # ================= 主流程 =================
-
     def stream_events(self, question: str, demo_user_id: str, session_id: str | None,
                       assume: str | None = None) -> Iterator[tuple[str, dict]]:
-        t0 = time.perf_counter()
+        """顶层包装:任何未捕获异常都降级为 error 卡,保证 SSE 永远以 answer+done 收尾。"""
         trace_id = "tr_" + uuid.uuid4().hex[:8]
         session_id = session_id or session_store.new_session_id()
+        t0 = time.perf_counter()
+        try:
+            yield from self._stream(question, demo_user_id, session_id, assume, trace_id, t0)
+        except Exception as e:  # 兜底:管道任何阶段异常都不中断演示
+            logger.exception("pipeline failed: %s", e)
+            card = self._error_card(trace_id, "处理该问题时出现异常,请稍后再试。")
+            try:
+                self._audit(trace_id, session_id, demo_user_id, question, "error", None, None,
+                            0, card, card.get("narrative") or [], False, None, t0, {}, "error")
+            except Exception:
+                pass
+            yield ("answer", card)
+            yield ("done", {"session_id": session_id, "trace_id": trace_id,
+                            "latency_ms": _ms(t0), "status": "error"})
+
+    # ================= 主流程 =================
+
+    def _stream(self, question, demo_user_id, session_id, assume, trace_id, t0):
         user = DEMO_USERS.get(demo_user_id) or DEMO_USERS["ceo"]
         permission = {"category": user["category"]} if user.get("category") else None
         data_as_of = get_data_as_of()
@@ -111,10 +129,31 @@ class Orchestrator:
             card = self._clarify_card(trace_id)
             status = "clarify"
 
-        if card is not None:  # 守卫卡:无需查询数据
+        if card is not None:  # 守卫卡/错误卡:无需查询数据,四步动画快速走完
+            guard_detail = {
+                "refuse": "该问题涉及敏感信息,按服务规则不提供",
+                "boundary": "已识别为明细/导出类需求,当前版本未开放",
+                "clarify": "问题信息不足,需要先确认时间范围",
+                "error": "该问题暂无法映射到现有指标" if status == "error" else "已按服务规则处理",
+            }.get(status, "已按服务规则处理该问题")
             timings["understand"] = _ms(t0)
             yield ("stage", {"step": "understand", "label": "理解问题", "status": "done",
-                             "detail": "已按服务规则处理该问题"})
+                             "detail": guard_detail})
+            yield ("stage", {"step": "query", "label": "查询数据", "status": "start",
+                             "detail": "该问题无需查询数据"})
+            yield ("stage", {"step": "query", "label": "查询数据", "status": "done",
+                             "detail": "已跳过数据查询"})
+            timings["query"] = 0
+            yield ("stage", {"step": "verify", "label": "交叉核验", "status": "start",
+                             "detail": "正在核验回答内容"})
+            yield ("stage", {"step": "verify", "label": "交叉核验", "status": "done",
+                             "detail": "回答内容已核验"})
+            timings["verify"] = 0
+            yield ("stage", {"step": "narrate", "label": "生成分析", "status": "start",
+                             "detail": "正在生成回答"})
+            yield ("stage", {"step": "narrate", "label": "生成分析", "status": "done",
+                             "detail": "回答已生成"})
+            timings["narrate"] = 0
             self._audit(trace_id, session_id, user["id"], question, card.get("type"),
                         None, None, 0, card, card.get("narrative") or [],
                         False, None, t0, timings, status)
@@ -131,7 +170,12 @@ class Orchestrator:
         source = "rule"
         try:
             session_ctx = session_store.get(session_id)
-            parsed = rules.parse(question, options)
+            asof = None
+            try:
+                asof = dt.date.fromisoformat(data_as_of) if data_as_of else None
+            except ValueError:
+                asof = None
+            parsed = rules.parse(question, options, asof)
             ir = None
 
             if self.gateway.enabled():
@@ -174,6 +218,18 @@ class Orchestrator:
             timings["plan"] = _ms(t_plan)
             yield ("stage", {"step": "understand", "label": "理解问题", "status": "done",
                              "detail": "该问题暂无法映射到现有指标"})
+            yield ("stage", {"step": "query", "label": "查询数据", "status": "start",
+                             "detail": "该问题无需查询数据"})
+            yield ("stage", {"step": "query", "label": "查询数据", "status": "done",
+                             "detail": "已跳过数据查询"})
+            yield ("stage", {"step": "verify", "label": "交叉核验", "status": "start",
+                             "detail": "正在核验回答内容"})
+            yield ("stage", {"step": "verify", "label": "交叉核验", "status": "done",
+                             "detail": "回答内容已核验"})
+            yield ("stage", {"step": "narrate", "label": "生成分析", "status": "start",
+                             "detail": "正在生成回答"})
+            yield ("stage", {"step": "narrate", "label": "生成分析", "status": "done",
+                             "detail": "回答已生成"})
             self._audit(trace_id, session_id, user["id"], question, "error",
                         ir, None, 0, card, card.get("narrative") or [],
                         llm_used, llm_model, t0, timings, status)
@@ -197,7 +253,10 @@ class Orchestrator:
         start, end = compiler.resolve_time(ir["time"], data_as_of)
         prev = compiler.prev_range(start, end) if ir.get("compare") == "prev_period" else None
 
-        time_label = compiler.preset_label((ir.get("time") or {}).get("preset"))
+        ir_time = ir.get("time") or {}
+        time_label = compiler.time_label(ir_time)
+        period = self._period_text(ir_time, start, end)
+        prev_label = self._prev_label(ir_time.get("preset"))
         metric_name = sem.metric_name(ir["metric"])
         card_kind = (parsed.get("card") if parsed.get("ok") else None) or self._card_kind_from_ir(ir)
         dim_label = {"category": "类目", "channel": "渠道"}.get(
@@ -249,7 +308,7 @@ class Orchestrator:
         n_num = self._count_numbers(card)
         timings["verify"] = _ms(t_v)
         yield ("stage", {"step": "verify", "label": "交叉核验", "status": "done",
-                         "detail": f"已核验 {n_num} 项数字,与明细数据一致"})
+                         "detail": f"共{n_num}项数字与数据仓库一致"})
 
         # ---- narrate ----
         yield ("stage", {"step": "narrate", "label": "生成分析", "status": "start",
@@ -288,6 +347,12 @@ class Orchestrator:
             return "rank"
         return "summary"
 
+    def _period_text(self, ir_time: dict, start: str, end: str) -> str:
+        """叙事用的期间文本:preset 带 MM-DD 起止;整月/自定义 range 自带日期。"""
+        if isinstance(ir_time, dict) and ir_time.get("range"):
+            return compiler.time_label(ir_time)
+        return f"{compiler.preset_label(ir_time.get('preset'))}({start[5:]}~{end[5:]})"
+
     # ================= IR 构建 =================
 
     def _intent_to_ir(self, p: dict, session_ctx, assume, options):
@@ -301,8 +366,10 @@ class Orchestrator:
         assume_time = self._parse_assume(assume)
         if assume_time is not None:
             time_ir = assume_time
-        elif p.get("time_explicit") and p.get("time_preset"):
+        elif p.get("time_preset"):
             time_ir = {"preset": p["time_preset"]}
+        elif p.get("time_range"):
+            time_ir = {"range": p["time_range"]}
         elif prev_ir and prev_ir.get("time"):
             time_ir = prev_ir["time"]
             notes.append("已沿用上一轮的时间范围。")
@@ -313,23 +380,29 @@ class Orchestrator:
         p_filters = p.get("filters") or {}
         prev_filters = (prev_ir or {}).get("filters") or {}
         merged = {}
-        inherited_filter = False
+        inherited = []
         for k in ("category", "channel", "user_type"):
             if p_filters.get(k):
                 merged[k] = list(p_filters[k])
             elif prev_filters.get(k):
                 merged[k] = list(prev_filters[k])
-                inherited_filter = True
+                inherited.append(FILTER_LABEL[k])
             else:
                 merged[k] = []
-        if inherited_filter:
-            notes.append("已沿用上一轮的筛选条件。")
+        if inherited:
+            notes.append("已沿用上一轮的" + "/".join(inherited) + "筛选。")
 
         card = p["card"]
         dims = ["date"] if card == "trend" else ([p["dim"]] if card == "rank" and p.get("dim") else [])
         metric = p.get("metric")
-        if metric in (None, "__refund__"):
+        if metric in (None, "__refund__") and p.get("domain") == "refund":
             metric = "refund_rate"  # 退款域 summary:主指标退款率(卡内附退款金额)
+        elif metric is None and p.get("domain") == "overview":
+            metric = "gmv"  # 经营概况卡:IR 主指标 GMV(卡内另含退款率/客单价/新客占比)
+        elif metric is None and prev_ir and prev_ir.get("metric"):
+            metric = prev_ir["metric"]  # 追问未指明指标 → 继承上一轮指标
+            if not any(n.startswith("已沿用") for n in notes):
+                notes.append("已沿用上一轮的分析指标。")
         if p.get("vague"):
             assume_text = f"按 GMV 理解「{p['vague']}」"
         compare = "prev_period" if p.get("want_compare") else "none"
@@ -363,6 +436,9 @@ class Orchestrator:
         preset = rules.parse_time(a)
         if preset:
             return {"preset": preset}
+        rng = rules.parse_time_range(a)
+        if rng:
+            return {"range": rng}
         return None
 
     # ================= 查询与数据构建 =================
@@ -371,7 +447,14 @@ class Orchestrator:
         q = compiler.compile_metric_query(ir, self.semantic, start, end, permission)
         sqls.append(inline_sql(q["sql"], q["params"]))
         rows = query(q["sql"], q["params"])
-        return [{"dim": r.get("dim_name"), "val": _f(r.get("val"))} for r in rows]
+        is_ratio = self.semantic.is_ratio(ir["metric"])
+        out = []
+        for r in rows:
+            val = _f(r.get("val"))
+            if val is not None and is_ratio:
+                val *= 100.0  # yaml agg 输出小数比率,统一转为百分数(2.81 = 2.81%)
+            out.append({"dim": r.get("dim_name"), "val": val})
+        return out
 
     def _build_data(self, ir, parsed, permission, start, end, prev, sqls, card_kind) -> dict:
         domain = (parsed or {}).get("domain") or "gmv"
@@ -386,12 +469,15 @@ class Orchestrator:
             "query_detail": "",
         }
         ctx = {"ir": ir, "permission": permission, "start": start, "end": end,
-               "prev": prev, "time_label": compiler.preset_label((ir.get("time") or {}).get("preset")),
+               "prev": prev, "time_label": compiler.time_label(ir.get("time")),
+               "period": self._period_text(ir.get("time"), start, end),
                "prev_label": self._prev_label((ir.get("time") or {}).get("preset")),
                "parsed": parsed, "domain": domain, "sqls": sqls}
 
         if card_kind == "summary" and domain == "refund":
             return self._data_refund_summary(ctx, result)
+        if card_kind == "summary" and domain == "overview":
+            return self._data_overview(ctx, result)
         if card_kind == "summary":
             return self._data_summary(ctx, result)
         if card_kind == "trend":
@@ -426,12 +512,14 @@ class Orchestrator:
 
         delta = None
         if value is not None and prev_value is not None:
-            delta = make_delta(value, prev_value, "pp" if is_ratio else "pct", higher_bad)
+            delta = make_delta(value, prev_value, "pp" if is_ratio else "pct", higher_bad,
+                               label=f"较{ctx['prev_label']}")
         kpis = [{"label": name, "value": fmt(value)}]
         if delta:
             kpis[0]["delta"] = delta
 
-        n = [f"{ctx['time_label']}({ctx['start'][5:]}~{ctx['end'][5:]}){name}为 {fmt(value)}。"]
+        scope = self._scope_text(ir)
+        n = [f"{ctx['period']}{scope}{name}为 {fmt(value)}。"]
         if value is not None and prev_value is not None:
             if is_ratio:
                 d = value - prev_value
@@ -448,11 +536,95 @@ class Orchestrator:
         result["narrator_payload"] = {"指标": name, "时间范围": f"{ctx['start']}~{ctx['end']}",
                                       "当前值": fmt(value),
                                       "上一期值": fmt(prev_value) if prev_value is not None else "无"}
-        result["raw"].update({"value": value, "prev": prev_value})
+        result["raw"].update({"value": value, "prev": prev_value, "metrics": [mkey]})
         result["card_fn"] = lambda tid, dao, notes, atext: self._finish_card(
-            "summary", tid, dao, f"{ctx['time_label']}{name}", kpis, None, None,
+            "summary", tid, dao, f"{ctx['time_label']}{scope}{name}", kpis, None, None,
             [mkey], notes, atext, ctx)
         result["query_detail"] = f"已完成{ctx['time_label']}数据汇总"
+        return result
+
+    def _data_overview(self, ctx, result):
+        """经营概况卡(复用 quickview 口径):GMV/退款率/客单价/新客订单占比,last 期 vs 上一期。"""
+        ir = ctx["ir"]
+        sem = self.semantic
+        scope = self._scope_text(ir)
+
+        def period_value(metric_key: str, start: str, end: str, dims=None):
+            mir = dict(ir)
+            mir["metric"] = metric_key
+            mir["dims"] = dims or []
+            rows = self._run(mir, start, end, ctx["permission"], ctx["sqls"])
+            return rows[0]["val"] if rows else None
+
+        prev = ctx["prev"] or compiler.prev_range(ctx["start"], ctx["end"])
+        gmv = period_value("gmv", ctx["start"], ctx["end"])
+        rate = period_value("refund_rate", ctx["start"], ctx["end"])
+        arppu = period_value("arppu", ctx["start"], ctx["end"])
+        ratio = period_value("new_order_ratio", ctx["start"], ctx["end"])
+        gmv_p = period_value("gmv", prev[0], prev[1])
+        rate_p = period_value("refund_rate", prev[0], prev[1])
+        arppu_p = period_value("arppu", prev[0], prev[1])
+        ratio_p = period_value("new_order_ratio", prev[0], prev[1])
+        result["row_count"] = 4
+        result["executed_sqls"] = list(ctx["sqls"])
+
+        kpis = []
+        for label, val, pv, mode, bad, fmt in (
+                ("GMV", gmv, gmv_p, "pct", False, fmt_amount),
+                ("退款率", rate, rate_p, "pp", True, fmt_ratio),
+                ("客单价", arppu, arppu_p, "pct", False, fmt_amount),
+                ("新客订单占比", ratio, ratio_p, "pp", False, fmt_ratio)):
+            item = {"label": label, "value": fmt(val)}
+            d = make_delta(val, pv, mode, bad, label=f"较{ctx['prev_label']}")
+            if d:
+                item["delta"] = d
+            kpis.append(item)
+
+        # 叙事:GMV 与涨幅 → 退款率与主要驱动 → 客单价
+        n = []
+        if gmv is not None:
+            if gmv_p:
+                pct = (gmv - gmv_p) / gmv_p * 100
+                word = "增长" if pct >= 0 else "下降"
+                n.append(f"{ctx['period']}{scope}GMV {fmt_amount(gmv)},较{ctx['prev_label']}{word} {abs(pct):.1f}%。")
+            else:
+                n.append(f"{ctx['period']}{scope}GMV {fmt_amount(gmv)}。")
+        if rate is not None:
+            base = f"退款率 {fmt_ratio(rate)}"
+            if rate_p is not None:
+                d = rate - rate_p
+                word = "上升" if d > 0 else ("下降" if d < 0 else "持平")
+                base += f",较{ctx['prev_label']}{word} {abs(d):.2f}pp"
+                if d > 0.05:
+                    try:
+                        attr = attribution.compute(ctx["start"], ctx["end"], prev[0], prev[1],
+                                                   ctx["permission"], None,
+                                                   filters=ir.get("filters") or {})
+                        if attr.get("top"):
+                            base += (f",主要由{attr['top']['name']}类目驱动"
+                                     f"({attr['top']['rate_old']:.2f}%→{attr['top']['rate_new']:.2f}%)")
+                    except Exception as e:
+                        logger.warning("overview driver attribution failed: %s", e)
+            n.append(base + "。")
+        if arppu is not None and ratio is not None:
+            n.append(f"客单价 {fmt_amount(arppu)},新客订单占比 {fmt_ratio(ratio)}。")
+        result["narrative"] = n
+
+        result["narrator_payload"] = {
+            "时间范围": f"{ctx['start']}~{ctx['end']}",
+            "GMV": fmt_amount(gmv), "上期GMV": fmt_amount(gmv_p),
+            "退款率": fmt_ratio(rate), "上期退款率": fmt_ratio(rate_p),
+            "客单价": fmt_amount(arppu), "上期客单价": fmt_amount(arppu_p),
+            "新客订单占比": fmt_ratio(ratio), "上期新客订单占比": fmt_ratio(ratio_p),
+        }
+        result["raw"].update({
+            "value": gmv, "prev": gmv_p, "value2": rate, "prev2": rate_p,
+            "metrics": ["gmv", "refund_rate", "arppu", "new_order_ratio"],
+        })
+        result["card_fn"] = lambda tid, dao, notes, atext: self._finish_card(
+            "summary", tid, dao, f"{ctx['time_label']}{scope}经营概况", kpis, None, None,
+            ["gmv", "refund_rate", "arppu", "new_order_ratio"], notes, atext, ctx)
+        result["query_detail"] = f"已完成{ctx['time_label']}经营数据汇总(GMV/退款率/客单价/新客占比)"
         return result
 
     def _data_refund_summary(self, ctx, result):
@@ -477,12 +649,15 @@ class Orchestrator:
 
         kpis = [{"label": "退款率", "value": fmt_ratio(rate)}]
         if rate is not None and rate_prev is not None:
-            kpis[0]["delta"] = make_delta(rate, rate_prev, "pp", True)
+            kpis[0]["delta"] = make_delta(rate, rate_prev, "pp", True,
+                                          label=f"较{ctx['prev_label']}")
         kpis.append({"label": "退款金额", "value": fmt_amount(amt)})
         if amt is not None and amt_prev is not None:
-            kpis[1]["delta"] = make_delta(amt, amt_prev, "pct", True)
+            kpis[1]["delta"] = make_delta(amt, amt_prev, "pct", True,
+                                          label=f"较{ctx['prev_label']}")
 
-        n = [f"{ctx['time_label']}退款金额 {fmt_amount(amt)},退款率 {fmt_ratio(rate)}。"]
+        scope = self._scope_text(ir)
+        n = [f"{ctx['period']}{scope}退款金额 {fmt_amount(amt)},退款率 {fmt_ratio(rate)}。"]
         if rate is not None and rate_prev is not None:
             d = rate - rate_prev
             word = "上升" if d > 0 else ("下降" if d < 0 else "持平")
@@ -495,9 +670,11 @@ class Orchestrator:
                                       "时间范围": f"{ctx['start']}~{ctx['end']}",
                                       "当前退款率": fmt_ratio(rate), "上期退款率": fmt_ratio(rate_prev),
                                       "当前退款金额": fmt_amount(amt), "上期退款金额": fmt_amount(amt_prev)}
-        result["raw"].update({"value": rate, "prev": rate_prev, "value2": amt, "prev2": amt_prev})
+        result["raw"].update({"value": rate, "prev": rate_prev,
+                              "value2": amt, "prev2": amt_prev,
+                              "metrics": ["refund_rate", "refund_amt"]})
         result["card_fn"] = lambda tid, dao, notes, atext: self._finish_card(
-            "summary", tid, dao, f"{ctx['time_label']}退款情况", kpis, None, None,
+            "summary", tid, dao, f"{ctx['time_label']}{scope}退款情况", kpis, None, None,
             ["refund_rate", "refund_amt"], notes, atext, ctx)
         result["query_detail"] = f"已完成{ctx['time_label']}退款数据汇总"
         return result
@@ -523,7 +700,8 @@ class Orchestrator:
         series = [{"name": "本期", "data": data}]
         if rows_prev:
             series.append({"name": "上一期", "data": [round(r["val"] or 0, 4) for r in rows_prev]})
-        chart = line_chart(f"{ctx['time_label']}{name}走势", x, series)
+        scope = self._scope_text(ir)
+        chart = line_chart(f"{ctx['time_label']}{scope}{name}走势", x, series)
 
         direction = self._trend_direction(data)
         n = []
@@ -535,24 +713,29 @@ class Orchestrator:
             if rows_prev:
                 prev_data = [round(r["val"] or 0, 4) for r in rows_prev]
                 prev_avg = sum(prev_data) / len(prev_data) if prev_data else 0
-                delta = make_delta(avg, prev_avg, "pp", higher_bad)
+                delta = make_delta(avg, prev_avg, "pp", higher_bad,
+                                   label=f"较{ctx['prev_label']}")
                 if delta:
                     kpis[0]["delta"] = delta
-            n.append(f"{ctx['time_label']}{name}日均 {fmt(avg)},最高 {fmt(data[peak_i])}({x[peak_i]}),"
-                     f"最低 {fmt(data[low_i])}({x[low_i]})。" if data else f"{ctx['time_label']}暂无数据。")
+            if data:
+                n.append(f"{ctx['period']}{scope}{name}日均 {fmt(avg)},最高 {fmt(data[peak_i])}({x[peak_i]}),"
+                         f"最低 {fmt(data[low_i])}({x[low_i]})。")
+            else:
+                n.append(f"{ctx['period']}暂无数据。")
             n.append(f"整体走势{direction}。")
             agg_value, agg_prev = avg, (sum(round(r['val'] or 0, 4) for r in rows_prev) / len(rows_prev) if rows_prev else None)
         else:
             total = sum(data)
             avg = total / len(data) if data else 0
             peak_i = max(range(len(data)), key=lambda i: data[i]) if data else None
-            kpis = [{"label": f"{ctx['time_label']}{name}合计", "value": fmt(total)}]
+            kpis = [{"label": f"{ctx['time_label']}{scope}{name}合计", "value": fmt(total)}]
             if rows_prev:
                 prev_total = sum(round(r["val"] or 0, 4) for r in rows_prev)
-                delta = make_delta(total, prev_total, "pct", higher_bad)
+                delta = make_delta(total, prev_total, "pct", higher_bad,
+                                   label=f"较{ctx['prev_label']}")
                 if delta:
                     kpis[0]["delta"] = delta
-            n.append(f"{ctx['time_label']}{name}合计 {fmt(total)},日均 {fmt(avg)}。")
+            n.append(f"{ctx['period']}{scope}{name}合计 {fmt(total)},日均 {fmt(avg)}。")
             if peak_i is not None:
                 n.append(f"峰值出现在 {x[peak_i]}({fmt(data[peak_i])})。")
             n.append(f"整体走势{direction}。")
@@ -563,9 +746,10 @@ class Orchestrator:
         result["narrator_payload"] = {"指标": name, "时间范围": f"{ctx['start']}~{ctx['end']}",
                                       "每日明细": payload_rows[:31]}
         result["raw"].update({"value": agg_value, "prev": agg_prev,
+                              "metrics": [mkey],
                               "rows": [{"name": x[i], "value": data[i]} for i in range(len(x))]})
         result["card_fn"] = lambda tid, dao, notes, atext: self._finish_card(
-            "trend", tid, dao, f"{ctx['time_label']}{name}走势", kpis, chart, None,
+            "trend", tid, dao, f"{ctx['time_label']}{scope}{name}走势", kpis, chart, None,
             [mkey], notes, atext, ctx)
         result["query_detail"] = f"已完成{ctx['time_label']}按天数据汇总(共 {len(rows_now)} 天)"
         return result
@@ -595,22 +779,22 @@ class Orchestrator:
             kpis.append({"label": f"{name}最高{dim_label}", "value": names[0]})
             kpis.append({"label": f"最高的{name}", "value": fmt(vals[0])})
             if total:
-                kpis.append({"label": "该{0}占比".format(dim_label), "value": fmt_pct1(vals[0] / total * 100)})
+                kpis.append({"label": f"该{dim_label}占比", "value": fmt_pct1(vals[0] / total * 100)})
         chart = bar_chart(f"{time_label}各{dim_label}{name}", names,
                           [{"name": name, "data": vals}])
-        cols = [col(dim_label, dim_label), col("val", name, "right")]
+        cols = [col(dim, dim_label), col("val", name, "right")]
         rows = []
         for i, (nm, v) in enumerate(zip(names, vals)):
-            row = {dim_label: nm, "val": fmt(v)}
+            row = {dim: nm, "val": fmt(v)}
             if total:
                 row["share"] = fmt_pct1(v / total * 100)
-                cols = [col(dim_label, dim_label), col("val", name, "right"),
+                cols = [col(dim, dim_label), col("val", name, "right"),
                         col("share", "占比", "right")]
             rows.append(row)
 
         n = []
         if names:
-            n.append(f"{time_label}{name}最高的是{names[0]}({fmt(vals[0])})"
+            n.append(f"{ctx['period']}{name}最高的是{names[0]}({fmt(vals[0])})"
                      + (f",占整体 {vals[0] / total * 100:.1f}%。" if total else "。"))
             if total and len(names) >= 3:
                 top3 = sum(vals[:3]) / total * 100
@@ -618,12 +802,13 @@ class Orchestrator:
             elif is_ratio and len(names) >= 2:
                 n.append(f"{name}最低的是{names[-1]}({fmt(vals[-1])}),最高最低相差 {vals[0] - vals[-1]:.2f}pp。")
         else:
-            n.append(f"{time_label}暂无{dim_label}数据。")
+            n.append(f"{ctx['period']}暂无{dim_label}数据。")
         result["narrative"] = n
         result["narrator_payload"] = {"指标": name, "维度": dim_label,
                                       "时间范围": f"{ctx['start']}~{ctx['end']}",
                                       "明细": [{dim_label: names[i], name: fmt(vals[i])} for i in range(len(names))]}
         result["raw"].update({"value": vals[0] if vals else None,
+                              "metrics": [mkey],
                               "rows": [{"name": nm, "value": v} for nm, v in zip(names, vals)]})
         result["card_fn"] = lambda tid, dao, notes, atext: self._finish_card(
             "rank", tid, dao, f"{time_label}各{dim_label}{name}", kpis, chart,
@@ -635,13 +820,18 @@ class Orchestrator:
         ir = ctx["ir"]
         time_label = ctx["time_label"]
         pstart, pend = ctx["prev"] if ctx["prev"] else compiler.prev_range(ctx["start"], ctx["end"])
+        filters = ir.get("filters") or {}
         attr = attribution.compute(ctx["start"], ctx["end"], pstart, pend,
-                                   ctx["permission"], ctx["sqls"])
+                                   ctx["permission"], ctx["sqls"], filters=filters)
         result["row_count"] = len(attr["items"])
         result["executed_sqls"] = list(ctx["sqls"])
 
+        scoped_cats = [c for c in attr.get("scoped") or []]
+        scope = ("仅" + "/".join(scoped_cats)) if scoped_cats else ""
+        title_scope = ("/".join(scoped_cats)) if scoped_cats else ""
         kpis = [{"label": "退款率", "value": fmt_ratio(attr["rate_new"]),
-                 "delta": make_delta(attr["rate_new"], attr["rate_old"], "pp", True)}]
+                 "delta": make_delta(attr["rate_new"], attr["rate_old"], "pp", True,
+                                     label=f"较{ctx['prev_label']}")}]
         chart = waterfall_chart(
             f"{time_label}退款率变化归因(pp)",
             f"上一期 {attr['rate_old']:.2f}",
@@ -665,16 +855,25 @@ class Orchestrator:
         d = attr["delta"]
         direction = "上升" if d > 0 else "下降"
         top = attr["top"]
-        n = [f"{time_label}整体退款率 {attr['rate_new']:.2f}%,较{ctx['prev_label']}的 "
+        rate_word = "退款率" if scoped_cats else "整体退款率"
+        n = [f"{ctx['period']}{scope}{rate_word} {attr['rate_new']:.2f}%,较{ctx['prev_label']}的 "
              f"{attr['rate_old']:.2f}% {direction} {abs(d):.2f}pp。"]
-        if top:
+        if scoped_cats:
+            n.append(f"当前范围为单一类目({title_scope}),整体变化即其退款率变化 {d:+.2f}pp。")
+        elif top:
             up_down = "升至" if top["rate_new"] >= top["rate_old"] else "降至"
             n.append(f"按类目拆解,{top['name']}是主要驱动:退款率由 {top['rate_old']:.2f}% "
-                     f"{up_down} {top['rate_new']:.2f}%,贡献约 {top['contrib']:+.2f}pp。")
+                     f"{up_down} {top['rate_new']:.2f}%,对整体贡献约 {top['contrib']:+.2f}pp。")
         if attr["has_residual"]:
             n.append(f"此外,类目结构变化带来 {attr['residual']:+.2f}pp 的影响。")
-        else:
-            n.append("其余类目退款率基本持平。")
+        elif not scoped_cats:
+            others = [it for it in attr["items"]
+                      if (not top or it["name"] != top["name"]) and abs(it["contrib"]) >= 0.005]
+            if others:
+                others_sum = sum(it["contrib"] for it in others)
+                n.append(f"其余类目合计贡献 {others_sum:+.2f}pp,影响相对有限。")
+            else:
+                n.append("其余类目退款率基本持平。")
 
         result["narrative"] = n
         result["narrator_payload"] = {
@@ -688,11 +887,12 @@ class Orchestrator:
         result["raw"].update({
             "value": attr["rate_new"], "prev": attr["rate_old"], "delta_pp": attr["delta"],
             "residual_pp": attr["residual"],
+            "metrics": ["refund_rate", "gmv"],
             "rows": [{"name": r["category"], "value": round(r["contrib"], 4)}
                      for r in attr["detail_rows"]],
         })
         result["card_fn"] = lambda tid, dao, notes, atext: self._finish_card(
-            "attribution", tid, dao, f"{time_label}退款率归因", kpis, chart, tbl,
+            "attribution", tid, dao, f"{time_label}{title_scope}退款率归因", kpis, chart, tbl,
             ["refund_rate", "gmv"], notes, atext, ctx,
             scope_note="以上为相关性线索,建议业务侧进一步确认。")
         result["query_detail"] = (f"已汇总本期({ctx['start'][5:]}~{ctx['end'][5:]})与"
@@ -712,6 +912,9 @@ class Orchestrator:
         order_ir = dict(base_ir)
         order_ir["metric"] = "order_cnt"
         order_rows = self._run(order_ir, ctx["start"], ctx["end"], ctx["permission"], ctx["sqls"])
+        arppu_ir = dict(base_ir)
+        arppu_ir["metric"] = "arppu"
+        arppu_rows = self._run(arppu_ir, ctx["start"], ctx["end"], ctx["permission"], ctx["sqls"])
 
         ratio_ir = dict(ir)
         ratio_ir["metric"] = "new_order_ratio"
@@ -722,40 +925,44 @@ class Orchestrator:
         if ctx["prev"]:
             rp = self._run(ratio_ir, ctx["prev"][0], ctx["prev"][1], ctx["permission"], ctx["sqls"])
             ratio_prev = rp[0]["val"] if rp else None
-        result["row_count"] = len(gmv_rows) + len(order_rows)
+        result["row_count"] = len(gmv_rows) + len(order_rows) + len(arppu_rows)
         result["executed_sqls"] = list(ctx["sqls"])
 
         def by_type(rows):
             return {r["dim"]: (r["val"] or 0) for r in rows}
 
-        gmv_m, order_m = by_type(gmv_rows), by_type(order_rows)
+        gmv_m, order_m, arppu_m = by_type(gmv_rows), by_type(order_rows), by_type(arppu_rows)
         types = ["新客", "老客"]
         gmv_vals = [round(gmv_m.get(t, 0.0), 2) for t in types]
         order_vals = [round(order_m.get(t, 0.0), 2) for t in types]
+        arppu_vals = [round(arppu_m.get(t, 0.0), 2) for t in types]
         gmv_total = sum(gmv_vals) or None
 
         kpis = [{"label": "新客订单占比", "value": fmt_pct1(new_ratio)}]
         if new_ratio is not None and ratio_prev is not None:
-            kpis[0]["delta"] = make_delta(new_ratio, ratio_prev, "pp", False)
+            kpis[0]["delta"] = make_delta(new_ratio, ratio_prev, "pp", False,
+                                          label=f"较{ctx['prev_label']}")
 
         chart = group_chart(f"{time_label}新老客对比", types,
                             [{"name": "GMV", "data": gmv_vals},
                              {"name": "订单数", "data": order_vals}])
         cols = [col("user_type", "用户类型"), col("orders", "订单数", "right"),
-                col("gmv", "GMV", "right"), col("share", "GMV占比", "right")]
+                col("gmv", "GMV", "right"), col("arppu", "客单价", "right"),
+                col("share", "GMV占比", "right")]
         rows = []
         for i, t in enumerate(types):
             rows.append({
                 "user_type": t, "orders": fmt_count(order_vals[i]),
-                "gmv": fmt_amount(gmv_vals[i]),
+                "gmv": fmt_amount(gmv_vals[i]), "arppu": fmt_amount(arppu_vals[i]),
                 "share": fmt_pct1(gmv_vals[i] / gmv_total * 100) if gmv_total else "—",
             })
         tbl = table(cols, rows)
 
-        n = [f"{time_label}新客订单占比 {fmt_pct1(new_ratio)}。"]
+        n = [f"{ctx['period']}新客订单占比 {fmt_pct1(new_ratio)}。"]
         if gmv_total:
             n.append(f"新客 GMV {fmt_amount(gmv_vals[0])}(占 {gmv_vals[0] / gmv_total * 100:.1f}%),"
                      f"老客 GMV {fmt_amount(gmv_vals[1])}(占 {gmv_vals[1] / gmv_total * 100:.1f}%)。")
+        n.append(f"客单价方面,新客 {fmt_amount(arppu_vals[0])} 元,老客 {fmt_amount(arppu_vals[1])} 元。")
         if ctx["prev"]:
             op = self._run(order_ir, ctx["prev"][0], ctx["prev"][1], ctx["permission"], ctx["sqls"])
             op_m = by_type(op)
@@ -771,19 +978,35 @@ class Orchestrator:
         result["narrator_payload"] = {"时间范围": f"{ctx['start']}~{ctx['end']}",
                                       "新客订单占比": fmt_pct1(new_ratio),
                                       "新客GMV": fmt_amount(gmv_vals[0]), "老客GMV": fmt_amount(gmv_vals[1]),
-                                      "新客订单数": fmt_count(order_vals[0]), "老客订单数": fmt_count(order_vals[1])}
+                                      "新客订单数": fmt_count(order_vals[0]), "老客订单数": fmt_count(order_vals[1]),
+                                      "新客客单价": fmt_amount(arppu_vals[0]), "老客客单价": fmt_amount(arppu_vals[1])}
         result["raw"].update({"value": new_ratio, "prev": ratio_prev,
+                              "metrics": ["new_order_ratio", "gmv", "order_cnt", "arppu"],
                               "rows": [{"name": "新客GMV", "value": gmv_vals[0]},
                                        {"name": "老客GMV", "value": gmv_vals[1]},
                                        {"name": "新客订单数", "value": order_vals[0]},
-                                       {"name": "老客订单数", "value": order_vals[1]}]})
+                                       {"name": "老客订单数", "value": order_vals[1]},
+                                       {"name": "新客客单价", "value": arppu_vals[0]},
+                                       {"name": "老客客单价", "value": arppu_vals[1]}]})
         result["card_fn"] = lambda tid, dao, notes, atext: self._finish_card(
             "compare", tid, dao, f"{time_label}新老客对比", kpis, chart, tbl,
-            ["new_order_ratio", "gmv", "order_cnt"], notes, atext, ctx)
+            ["new_order_ratio", "gmv", "order_cnt", "arppu"], notes, atext, ctx)
         result["query_detail"] = f"已完成{time_label}新老客数据汇总"
         return result
 
     # ================= 卡片收尾 =================
+
+    def _scope_text(self, ir: dict) -> str:
+        """筛选范围的后缀(类目/渠道)。"""
+        filters = ir.get("filters") or {}
+        parts = []
+        if filters.get("category"):
+            parts.append("/".join(filters["category"]))
+        if filters.get("channel"):
+            parts.append("/".join(filters["channel"]))
+        if filters.get("user_type"):
+            parts.append("/".join(filters["user_type"]))
+        return ("「" + "+".join(parts) + "」") if parts else ""
 
     def _finish_card(self, card_type, trace_id, data_as_of, title, kpis, chart, tbl,
                      caliber, notes, assume_text, ctx, scope_note=None):
@@ -793,6 +1016,14 @@ class Orchestrator:
         ctx_categories = list(filters.get("category") or [])
         if perm_cat and perm_cat not in ctx_categories:
             ctx_categories.append(perm_cat)
+        ir_time = ir.get("time") or {}
+        context = {
+            "time_preset": ir_time.get("preset"),
+            "category": ctx_categories,
+            "channel": list(filters.get("channel") or []),
+        }
+        if ir_time.get("range"):
+            context["time_range"] = list(ir_time["range"])
         return {
             "type": card_type,
             "trace_id": trace_id,
@@ -806,11 +1037,7 @@ class Orchestrator:
             "caliber": caliber,
             "scope_note": scope_note,
             "followups": self._followups(card_type, ir["metric"], ctx["domain"], perm_cat),
-            "context": {
-                "time_preset": (ir.get("time") or {}).get("preset"),
-                "category": ctx_categories,
-                "channel": list(filters.get("channel") or []),
-            },
+            "context": context,
         }
 
     def _followups(self, card_type, metric, domain, perm_cat) -> list:
