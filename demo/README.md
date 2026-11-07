@@ -53,3 +53,4 @@ token 只存本地(sys_settings 表),接口对外仅回掩码。
 - 后端日志:`/tmp/biz_demo_logs/backend.log`;健康检查:`curl 127.0.0.1:8310/api/health`
 - MySQL 停了:`docker start hanzipress-mysql`
 - 评测:管理后台「评测」页运行(golden_qa 21 条,规则模式 21/21)
+- 指标测试:bash demo/backend/run_tests.sh(语义层守门,改 metric/术语必跑)

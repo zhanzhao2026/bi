@@ -1,0 +1,40 @@
+# ============================================================
+# 语义层 · 派生指标(v13):depends_on + expr 引用其他指标,
+# loader 启动时按依赖图拓扑展开为完整 agg;除零守卫(NULLIF)写在 expr 模板里。
+# 展开结果必须与 v12 metrics.yaml 的 agg 逐字等价(对外行为不变铁律)。
+# 规则:expr 中 {key} 引用必须都在 depends_on 中声明,否则启动即报错。
+# ============================================================
+metrics:
+  arppu:
+    name: 客单价
+    plain: 客单价 = GMV ÷ 支付人数,同一人买多件只算一次人头。
+    unit: 元/人
+    depends_on: [gmv, pay_user_cnt]
+    expr: "{gmv}/NULLIF({pay_user_cnt},0)"
+    derived: true
+  refund_rate:
+    name: 退款率
+    plain: 退款率 = 退款金额 ÷ GMV,两边按同一时间与同一范围统计。
+    unit: "%"
+    depends_on: [refund_amt, gmv]
+    expr: "{refund_amt}/NULLIF({gmv},0)"
+    ratio: true
+    derived: true
+    higher_is_bad: true
+  refund_order_rate:
+    name: 订单退款率
+    plain: 发生退款的订单数 ÷ 支付订单数。
+    unit: "%"
+    depends_on: [refund_order_cnt, order_cnt]
+    expr: "{refund_order_cnt}/NULLIF({order_cnt},0)"
+    ratio: true
+    derived: true
+    higher_is_bad: true
+  new_order_ratio:
+    name: 新客订单占比
+    plain: 新客(当日首次付款用户)下的订单占全部订单的比例。
+    unit: "%"
+    depends_on: [new_order_cnt, order_cnt]
+    expr: "{new_order_cnt}/NULLIF({order_cnt},0)"
+    ratio: true
+    derived: true

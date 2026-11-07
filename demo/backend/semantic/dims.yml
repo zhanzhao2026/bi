@@ -1,0 +1,10 @@
+# ============================================================
+# 语义层 · 维度与时间口径(v13):自 v12 metrics.yaml 原样迁移。
+# column 中的表别名 f 与 models.yml(fact_order.alias)对应。
+# ============================================================
+dims:
+  date:      {column: "f.pay_date", desc: 支付日期}
+  category:  {column: "f.category_id", name_table: dim_category, name_col: category_name, desc: 商品类目, user_terms: [类目,品类]}
+  channel:   {column: "f.channel_id", name_table: dim_channel, name_col: channel_name, desc: 成交渠道, user_terms: [渠道,直播,私域]}
+  user_type: {column: "f.user_type", desc: "用户类型(新客/老客)", user_terms: [新客,老客,新老]}
+time_presets: [yesterday, last_7d, last_30d, this_month, last_month]

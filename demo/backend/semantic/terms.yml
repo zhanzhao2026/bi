@@ -1,0 +1,102 @@
+# ============================================================
+# 语义层 · 术语表(v13):自 app/engine/rules.py 与 guards.py 全量迁移。
+# 铁律:词是数据,意图构造逻辑(正则编译、分支判断)留在代码中;
+#       正则 pattern 数据在 YAML,编译动作在 rules.py / guards.py。
+# 修改词表须登记 semantic_version 新版本;迁移不增删任何词(行为零变化)。
+# ============================================================
+version: 13
+
+# ---- 拒答词(守卫1:命中即 refuse 卡;原 guards.REFUSE_WORDS)----
+forbidden:
+  - 薪酬
+  - 工资
+  - 薪资
+  - 工资条
+  - 身份证
+  - 手机号
+  - 银行卡
+  - 社保
+
+# ---- 明细边界词(守卫2:命中即 boundary 卡;原 guards.BOUNDARY_WORDS)----
+boundary:
+  - 明细
+  - 订单列表
+  - 订单详情
+  - 具体商品
+  - 哪款商品
+  - 哪款产品
+  - 哪个商品卖
+  - 导出
+
+# ---- 模糊指标词(守卫3:命中且无时间词 → clarify 卡;原 guards.VAGUE_WORDS)----
+clarify:
+  vague_words:
+    - 销售额
+    - 卖得怎么样
+    - 卖得如何
+    - 业绩
+    - 生意怎么样
+    - 做得怎么样
+  assume_metric: gmv                # 用户确认时间后,模糊词按该指标理解
+  options:                          # 澄清卡时间选项(原 guards.CLARIFY_OPTIONS,顺序即展示顺序)
+    - {label: 最近30天, value: last_30d}
+    - {label: 最近7天, value: last_7d}
+    - {label: 昨天, value: yesterday}
+    - {label: 上个月, value: last_month}
+  # 守卫时间探测正则(原 guards._TIME_RE,比 time_words 更宽:含"今天/当日/30天")
+  time_detect: '上个月|上月|本月|这个月|当月|昨天|昨日|最近7天|近7天|过去7天|最近一周|近一周|过去一周|上周|最近30天|近30天|过去30天|最近一个月|近一个月|过去一个月|30天|近1个月|今天|当日|\d{4}\s*年|\d{1,2}\s*月'
+
+# ---- 时间词 → preset(原 rules.TIME_PATTERNS;顺序敏感:按列表顺序,具体词在前)----
+time_words:
+  - {pattern: '上个月|上月', preset: last_month}
+  - {pattern: '本月|这个月|当月', preset: this_month}
+  - {pattern: '昨天|昨日', preset: yesterday}
+  - {pattern: '最近7天|近7天|过去7天|最近一周|近一周|过去一周|上周|近1周', preset: last_7d}
+  - {pattern: '最近30天|近30天|过去30天|最近一个月|近一个月|过去一个月|近1个月|近30日|近一个月内', preset: last_30d}
+
+# ---- 同义词(指标/维度/筛值;原 rules.METRIC_PATTERNS / CHANNEL_ALIASES 等)----
+synonyms:
+  # 指标同义词(顺序敏感:先具体后宽泛;flags: i=忽略大小写)
+  metric_patterns:
+    - {pattern: '订单退款率', metric: refund_order_rate}
+    - {pattern: '退款率', metric: refund_rate}
+    - {pattern: '退款金额|退款额|退了多少|退款规模|退款了?多少钱|退款情况', metric: refund_amt}
+    - {pattern: '客单价|单均|每单金额', metric: arppu}
+    - {pattern: '支付人数|付款人数|购买人数|下单人数|消费人数|多少人来买|多少人买|多少[个来人].{0,8}用户|支付用户|下单用户|用户数|买家人数', metric: pay_user_cnt}
+    - {pattern: '新客订单占比|新客占比|新客比例', metric: new_order_ratio}
+    - {pattern: '订单数|订单量|单量|多少单|几单|多少笔|笔订单|多少个订单', metric: order_cnt}
+    - {pattern: '件数|销量|卖了多少件', metric: item_cnt}
+    - {pattern: '成交额|成交金额|交易额|流水|成交规模|营业额|销售情况|销售', metric: gmv}
+    - {pattern: 'gmv', metric: gmv, flags: i}
+    - {pattern: 'arppu', metric: arppu, flags: i}
+  # 模糊指标词正则(原 rules.VAGUE_METRIC_RE,与 clarify.vague_words 同源)
+  vague: '销售额|卖得怎么样|卖得如何|业绩|生意怎么样|做得怎么样'
+  # 退款域词(指标未指明但属于退款话题;原 rules.REFUND_RE)
+  refund_domain: '退款|退货|退了'
+  # 新老客对比问句(原 rules.COMPARE_RE)
+  compare: '新老客|新客和老客|老客和新客|新老对比|新客老客'
+  # 渠道维度词(原 rules._rank_dim 中 "渠道" in q 的字面判断)
+  channel_word: 渠道
+  # 渠道口语别名 → dim_channel 渠道名(原 rules.CHANNEL_ALIASES)
+  channel_aliases:
+    付费: 付费推广
+    推广: 付费推广
+    投流: 付费推广
+  # 用户类型筛值词(原 parse_filters 中"新客/老客"字面判断;两者同现则互斥不筛)
+  user_type: [新客, 老客]
+
+# ---- 意图词(卡片类型判定用正则;原 rules.TREND/RANK/ATTRIBUTION/... 等)----
+intent:
+  trend: '走势|趋势|按天|每天|每日|曲线|波动'
+  rank: '排名|排行|top|贡献|结构|分布|占比|哪些|哪一个|哪个|各个|各类|每类|各渠道'
+  attribution: '为什么|原因|归因|驱动|上升|上涨|升高|提高|下滑|下降|下跌|恶化|变差|变高|涨了|跌了|高了多少|低了多少|比之前|比上个|较之前|相比之前|变化'
+  # 用户显式要求对比(原 rules.COMPARE_REQ_RE)
+  compare_request: '对比|比较|较上|相比|同期|上一期|上期|环比|同比'
+  # 追问式问句(无指标无筛选词,需挂靠上一轮继承;原 rules.FOLLOWUP_RE)
+  followup: '较上一期|上一期|变化多少|对比|比较|环比|同比|那.*呢|表现呢|情况呢'
+  # 经营概况/大盘类(原 rules.OVERVIEW_RE)
+  overview: '整体经营|经营情况|经营概况|经营怎么样|大盘|整体情况|整体概况|整体怎么样|总体情况|总体概况|最近怎么样|最近表现|整体表现'
+  # 退款走势判定:问题含"退款率"→ 退款率走势,否则退款金额走势(原 parse 内字面判断)
+  refund_trend_rate: '退款率'
+  # 退款排名判定:命中则按退款金额排名,否则退款率排名(原 parse 内字面判断)
+  refund_rank_amt: '退款金额|退得多|退款多|退款额'

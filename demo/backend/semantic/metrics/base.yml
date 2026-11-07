@@ -1,0 +1,42 @@
+# ============================================================
+# 语义层 · 基础指标(v13):直接由事实表列聚合,不引用其他指标。
+# agg 中的表别名 f 来自 models.yml(fact_order.alias)。
+# v13 新增:refund_order_cnt / new_order_cnt(原为派生指标的分子,上提为基础指标)。
+# 修改口径须登记 semantic_version 新版本。
+# ============================================================
+metrics:
+  gmv:
+    name: GMV
+    plain: 用户付款成功的总金额,含后续退款部分,退款不从中扣除。
+    unit: 元
+    agg: "SUM(f.pay_amount)"
+  order_cnt:
+    name: 支付订单数
+    plain: 付款成功的订单数量,按订单去重。
+    unit: 单
+    agg: "COUNT(DISTINCT f.order_id)"
+  pay_user_cnt:
+    name: 支付人数
+    plain: 付款成功的去重用户数,同一人多笔订单只算一次。
+    unit: 人
+    agg: "COUNT(DISTINCT f.user_id)"
+  item_cnt:
+    name: 支付件数
+    plain: 付款成功的商品件数合计。
+    unit: 件
+    agg: "SUM(f.item_cnt)"
+  refund_amt:
+    name: 退款金额
+    plain: 已发生的退款总额,含仅退款与退货退款。
+    unit: 元
+    agg: "SUM(f.refund_amount)"
+  refund_order_cnt:
+    name: 退款订单数
+    plain: 发生退款的订单数,一笔订单只要发生退款(含仅退款与退货退款)即计入。
+    unit: 单
+    agg: "SUM(f.is_refund)"
+  new_order_cnt:
+    name: 新客订单数
+    plain: 新客(当日首次付款用户)下的订单数。
+    unit: 单
+    agg: "SUM(f.user_type='新客')"

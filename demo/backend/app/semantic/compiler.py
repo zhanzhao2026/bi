@@ -1,9 +1,10 @@
 """语义编译器(契约 §5):IR → SQL。
 
-- 基础模板 FROM fact_order f,时间列 f.pay_date
+- 基础模板 FROM {事实表} {别名},时间列取自 models.yml(default_table/alias/date_col),
+  不再硬编码表名 fact_order
 - category/channel 维 JOIN 维表取中文名;date 维格式化 MM-DD
 - 行级权限谓词(§12)以 AND 注入 WHERE
-- 比率指标分母 NULLIF 防除零(来自 metrics.yaml agg 定义)
+- 比率指标分母 NULLIF 防除零(来自语义层指标定义,派生指标已由 loader 依赖图展开)
 """
 import datetime as dt
 import re
@@ -152,47 +153,48 @@ def validate_ir(ir: dict, semantic: Semantic, options: dict) -> tuple[bool, str]
 
 def build_where(params: list, semantic: Semantic, start: str, end: str,
                 filters: dict | None = None, permission: dict | None = None) -> str:
-    conds = ["f.pay_date BETWEEN %s AND %s"]
+    f = semantic.fact_alias
+    conds = [f"{f}.{semantic.fact_date_col} BETWEEN %s AND %s"]
     params.extend([start, end])
     filters = filters or {}
     if filters.get("category"):
         ph = ", ".join(["%s"] * len(filters["category"]))
-        conds.append(f"f.category_id IN (SELECT category_id FROM dim_category WHERE category_name IN ({ph}))")
+        conds.append(f"{f}.category_id IN (SELECT category_id FROM dim_category WHERE category_name IN ({ph}))")
         params.extend(filters["category"])
     if filters.get("channel"):
         ph = ", ".join(["%s"] * len(filters["channel"]))
-        conds.append(f"f.channel_id IN (SELECT channel_id FROM dim_channel WHERE channel_name IN ({ph}))")
+        conds.append(f"{f}.channel_id IN (SELECT channel_id FROM dim_channel WHERE channel_name IN ({ph}))")
         params.extend(filters["channel"])
     if filters.get("user_type"):
         ph = ", ".join(["%s"] * len(filters["user_type"]))
-        conds.append(f"f.user_type IN ({ph})")
+        conds.append(f"{f}.user_type IN ({ph})")
         params.extend(filters["user_type"])
     # 行级权限谓词(§12):beauty → 仅美妆,以 AND 注入
     if permission and permission.get("category"):
-        conds.append("f.category_id IN (SELECT category_id FROM dim_category WHERE category_name = %s)")
+        conds.append(f"{f}.category_id IN (SELECT category_id FROM dim_category WHERE category_name = %s)")
         params.append(permission["category"])
     return " AND ".join(conds)
 
 
 # ---------------- 编译 ----------------
-
+# 维度模板:{f} = 事实表别名,{d} = 时间列(models.yml date_col),编译时展开
 DIM_JOIN = {
-    "category": "JOIN dim_category c ON c.category_id = f.category_id",
-    "channel": "JOIN dim_channel ch ON ch.channel_id = f.channel_id",
+    "category": "JOIN dim_category c ON c.category_id = {f}.category_id",
+    "channel": "JOIN dim_channel ch ON ch.channel_id = {f}.channel_id",
     "date": "",
     "user_type": "",
 }
 DIM_SELECT = {
     "category": "c.category_name",
     "channel": "ch.channel_name",
-    "date": "DATE_FORMAT(f.pay_date, '%%m-%%d')",
-    "user_type": "f.user_type",
+    "date": "DATE_FORMAT({f}.{d}, '%%m-%%d')",
+    "user_type": "{f}.user_type",
 }
 DIM_GROUP = {
     "category": "c.category_name",
     "channel": "ch.channel_name",
-    "date": "f.pay_date",
-    "user_type": "f.user_type",
+    "date": "{f}.{d}",
+    "user_type": "{f}.user_type",
 }
 DIM_LABEL = {"category": "类目", "channel": "渠道", "date": "日期", "user_type": "用户类型"}
 
@@ -204,28 +206,31 @@ def compile_metric_query(ir: dict, semantic: Semantic, start: str, end: str,
     if not metric:
         raise CompileError(f"未知指标: {ir['metric']}")
     agg = metric["agg"]
+    table = semantic.fact_table          # 来自 models.yml(default_table)
+    f = semantic.fact_alias              # 来自 models.yml(tables.<table>.alias)
+    d = semantic.fact_date_col           # 来自 models.yml(tables.<table>.date_col)
     dims = ir.get("dims") or []
     dim = dims[0] if dims else None
     params: list = []
     where = build_where(params, semantic, start, end, ir.get("filters"), permission)
 
     if dim:
-        select_dim = f"{DIM_SELECT[dim]} AS dim_name"
-        join = DIM_JOIN[dim]
+        select_dim = f"{DIM_SELECT[dim].format(f=f, d=d)} AS dim_name"
+        join = DIM_JOIN[dim].format(f=f)
         if dim == "date":
-            # date 维直接 GROUP BY f.pay_date,升序输出
+            # date 维直接 GROUP BY 事实表日期列,升序输出
             sql = (
-                f"SELECT {select_dim}, {agg} AS val FROM fact_order f {join} "
-                f"WHERE {where} GROUP BY f.pay_date ORDER BY f.pay_date"
+                f"SELECT {select_dim}, {agg} AS val FROM {table} {f} {join} "
+                f"WHERE {where} GROUP BY {f}.{d} ORDER BY {f}.{d}"
             )
         else:
             order = "ASC" if str(ir.get("order")) == "asc" else "DESC"
             limit = int(ir.get("limit", 10))
             sql = (
-                f"SELECT {select_dim}, {agg} AS val FROM fact_order f {join} "
-                f"WHERE {where} GROUP BY {DIM_GROUP[dim]} ORDER BY val {order}, dim_name LIMIT {limit}"
+                f"SELECT {select_dim}, {agg} AS val FROM {table} {f} {join} "
+                f"WHERE {where} GROUP BY {DIM_GROUP[dim].format(f=f, d=d)} ORDER BY val {order}, dim_name LIMIT {limit}"
             )
     else:
-        sql = f"SELECT {agg} AS val FROM fact_order f WHERE {where}"
+        sql = f"SELECT {agg} AS val FROM {table} {f} WHERE {where}"
 
     return {"sql": sql, "params": params, "dim": dim, "dim_label": DIM_LABEL.get(dim)}

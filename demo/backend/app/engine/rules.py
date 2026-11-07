@@ -1,6 +1,7 @@
 """规则兜底意图解析(契约 §9,无 LLM 时必须可用)。
 
-关键词命中表 + 口语中文解析,输出结构化 intent:
+词表全部来自 semantic/terms.yml(词是数据,经 app/semantic/loader 加载);
+意图构造逻辑(正则编译、解析顺序、分支判断)留在本模块。输出结构化 intent:
   domain / metric / card / dim / time_preset / time_range / filters / vague 等。
 覆盖:退款(走势/归因/默认)、GMV·销售(走势/排名/渠道/默认)、客单价、支付人数、
 订单数、退款金额、支付件数、新老客对比、时间词(昨天/最近7天/最近30天/上月/本月/
@@ -9,54 +10,62 @@
 import datetime as dt
 import re
 
-# ---------- 时间词(顺序敏感:具体优先) ----------
+from ..semantic.loader import get_semantic
+
+# ---------- 词表加载(terms.yml,导入时编译一次;缺词表即抛错,fail fast) ----------
+_T = get_semantic().terms
+
+
+def _req(section: str, key: str) -> str:
+    v = (_T.get(section) or {}).get(key)
+    if not v:
+        raise RuntimeError(f"terms.yml 缺少 {section}.{key} 词表")
+    return str(v)
+
+
+# ---------- 时间词(顺序敏感:具体优先;pattern 数据在 terms.yml) ----------
 TIME_PATTERNS: list[tuple[str, str]] = [
-    (r"上个月|上月", "last_month"),
-    (r"本月|这个月|当月", "this_month"),
-    (r"昨天|昨日", "yesterday"),
-    (r"最近7天|近7天|过去7天|最近一周|近一周|过去一周|上周|近1周", "last_7d"),
-    (r"最近30天|近30天|过去30天|最近一个月|近一个月|过去一个月|近1个月|近30日|近一个月内", "last_30d"),
+    (str(t["pattern"]), str(t["preset"])) for t in (_T.get("time_words") or [])
 ]
+if not TIME_PATTERNS:
+    raise RuntimeError("terms.yml 缺少 time_words 词表")
 
 MONTH_FULL_RE = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月")
 MONTH_BARE_RE = re.compile(r"(?<!\d)(\d{1,2})\s*月(?!\d)")
 
-CHANNEL_ALIASES = {"付费": "付费推广", "推广": "付费推广", "投流": "付费推广"}
-
-# ---------- 指标词(顺序敏感:先具体后宽泛) ----------
+# ---------- 指标词(顺序敏感:先具体后宽泛;pattern 数据在 terms.yml) ----------
 # (pattern, metric_key, flags)
 METRIC_PATTERNS: list[tuple[str, str, int]] = [
-    (r"订单退款率", "refund_order_rate", 0),
-    (r"退款率", "refund_rate", 0),
-    (r"退款金额|退款额|退了多少|退款规模|退款了?多少钱|退款情况", "refund_amt", 0),
-    (r"客单价|单均|每单金额", "arppu", 0),
-    (r"支付人数|付款人数|购买人数|下单人数|消费人数|多少人来买|多少人买"
-     r"|多少[个来人].{0,8}用户|支付用户|下单用户|用户数|买家人数", "pay_user_cnt", 0),
-    (r"新客订单占比|新客占比|新客比例", "new_order_ratio", 0),
-    (r"订单数|订单量|单量|多少单|几单|多少笔|笔订单|多少个订单", "order_cnt", 0),
-    (r"件数|销量|卖了多少件", "item_cnt", 0),
-    (r"成交额|成交金额|交易额|流水|成交规模|营业额|销售情况|销售", "gmv", 0),
-    (r"gmv", "gmv", re.IGNORECASE),
-    (r"arppu", "arppu", re.IGNORECASE),
+    (str(m["pattern"]), str(m["metric"]),
+     re.IGNORECASE if str(m.get("flags", "")).lower() == "i" else 0)
+    for m in ((_T.get("synonyms") or {}).get("metric_patterns") or [])
 ]
+if not METRIC_PATTERNS:
+    raise RuntimeError("terms.yml 缺少 synonyms.metric_patterns 词表")
 
-VAGUE_METRIC_RE = re.compile(r"销售额|卖得怎么样|卖得如何|业绩|生意怎么样|做得怎么样")
-COMPARE_RE = re.compile(r"新老客|新客和老客|老客和新客|新老对比|新客老客")
-REFUND_RE = re.compile(r"退款|退货|退了")
-TREND_RE = re.compile(r"走势|趋势|按天|每天|每日|曲线|波动")
-RANK_RE = re.compile(r"排名|排行|top|贡献|结构|分布|占比|哪些|哪一个|哪个|各个|各类|每类|各渠道")
-ATTRIBUTION_RE = re.compile(
-    r"为什么|原因|归因|驱动|上升|上涨|升高|提高|下滑|下降|下跌|恶化|变差|变高|涨了|跌了"
-    r"|高了多少|低了多少|比之前|比上个|较之前|相比之前|变化")
-COMPARE_REQ_RE = re.compile(r"对比|比较|较上|相比|同期|上一期|上期|环比|同比")
-# 追问式问句(无指标无筛选词,需挂靠上一轮继承指标)
-FOLLOWUP_RE = re.compile(r"较上一期|上一期|变化多少|对比|比较|环比|同比|那.*呢|表现呢|情况呢")
-# 经营概况类口语问法 → overview 卡(四 KPI:GMV/退款率/客单价/新客订单占比)
-OVERVIEW_RE = re.compile(
-    r"整体经营|经营情况|经营概况|经营怎么样|大盘|整体情况|整体概况|整体怎么样"
-    r"|总体情况|总体概况|最近怎么样|最近表现|整体表现")
+VAGUE_METRIC_RE = re.compile(_req("synonyms", "vague"))
+COMPARE_RE = re.compile(_req("synonyms", "compare"))
+REFUND_RE = re.compile(_req("synonyms", "refund_domain"))
+CHANNEL_WORD_RE = re.compile(_req("synonyms", "channel_word"))
+USER_TYPE_WORDS: list[str] = [str(w) for w in ((_T.get("synonyms") or {}).get("user_type") or [])]
+if not USER_TYPE_WORDS:
+    raise RuntimeError("terms.yml 缺少 synonyms.user_type 词表")
 
-# compare 卡允许承载的指标(新老客对比口径下有业务含义的)
+TREND_RE = re.compile(_req("intent", "trend"))
+RANK_RE = re.compile(_req("intent", "rank"))
+ATTRIBUTION_RE = re.compile(_req("intent", "attribution"))
+COMPARE_REQ_RE = re.compile(_req("intent", "compare_request"))
+FOLLOWUP_RE = re.compile(_req("intent", "followup"))
+OVERVIEW_RE = re.compile(_req("intent", "overview"))
+# 退款域细分:走势按"退款率"词判定;排名按金额词判定(词在 terms.yml)
+REFUND_TREND_RATE_RE = re.compile(_req("intent", "refund_trend_rate"))
+REFUND_RANK_AMT_RE = re.compile(_req("intent", "refund_rank_amt"))
+
+CHANNEL_ALIASES: dict[str, str] = {
+    str(k): str(v) for k, v in ((_T.get("synonyms") or {}).get("channel_aliases") or {}).items()
+}
+
+# compare 卡允许承载的指标(新老客对比口径下有业务含义的;指标集合属意图逻辑,留代码)
 COMPARE_METRICS = {"order_cnt", "gmv", "arppu", "pay_user_cnt", "item_cnt",
                    "new_order_ratio", "refund_rate", "refund_amt"}
 
@@ -101,11 +110,11 @@ def parse_filters(question: str, options: dict) -> dict:
     for alias, name in CHANNEL_ALIASES.items():
         if alias in q and name not in filters["channel"]:
             filters["channel"].append(name)
+    # 用户类型词:命中恰好一个筛值词才筛(同现=新老客对比,互斥不筛)
     if not COMPARE_RE.search(q):
-        if "新客" in q and "老客" not in q:
-            filters["user_type"].append("新客")
-        elif "老客" in q and "新客" not in q:
-            filters["user_type"].append("老客")
+        hits = [w for w in USER_TYPE_WORDS if w in q]
+        if len(hits) == 1:
+            filters["user_type"].append(hits[0])
     return filters
 
 
@@ -130,7 +139,7 @@ def parse_metric(question: str):
 
 
 def _rank_dim(q: str, filters: dict) -> str:
-    if filters.get("channel") or "渠道" in q:
+    if filters.get("channel") or CHANNEL_WORD_RE.search(q):
         return "channel"
     return "category"
 
@@ -190,9 +199,9 @@ def parse(question: str, options: dict, asof=None) -> dict:
         else:
             card = "summary"
         if card == "trend":
-            mkey = "refund_rate" if "退款率" in q else "refund_amt"
+            mkey = "refund_rate" if REFUND_TREND_RATE_RE.search(q) else "refund_amt"
         elif card == "rank":
-            mkey = "refund_amt" if re.search(r"退款金额|退得多|退款多|退款额", q) else "refund_rate"
+            mkey = "refund_amt" if REFUND_RANK_AMT_RE.search(q) else "refund_rate"
         else:
             mkey = None  # summary:退款率 + 退款金额双 KPI
         return _mk("refund", card, q, time_preset, time_range, filters, metric=mkey,

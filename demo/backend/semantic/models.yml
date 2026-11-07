@@ -1,0 +1,26 @@
+# ============================================================
+# 语义层 · 模型声明(v13 · 交易域)
+# 事实表与时间列的唯一定义处;编译器(app/semantic/compiler.py)
+# 据此生成 FROM / WHERE,不再硬编码表名 fact_order。
+# 新增事实表时:在 tables 下登记,并在 metrics/dims 中补齐引用。
+# ============================================================
+
+# 默认事实表(编译器未显式指定表时使用)
+default_table: fact_order
+
+# 数据水位查询(health/quickview 的 data_as_of)
+data_as_of_query: SELECT MAX(pay_date) FROM fact_order
+
+tables:
+  fact_order:
+    alias: f
+    grain: order_id        # 事实粒度:一行 = 一笔支付订单
+    date_col: pay_date     # 统一时间列(指标聚合与筛选均按此列)
+    desc: 订单事实表(付款粒度;pay_amount 不扣减退款,退款记 refund_amount/is_refund)
+
+  # ---- 预留第二张事实表声明位(示例,启用前先在 metrics/dims 中补齐引用)----
+  # fact_traffic:
+  #   alias: t
+  #   grain: session_id
+  #   date_col: stat_date
+  #   desc: 流量会话事实表(v1 未启用)

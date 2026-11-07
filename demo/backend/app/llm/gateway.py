@@ -3,7 +3,8 @@
 - httpx,timeout 20s,temperature 0.2
 - 配置优先级:sys_settings 表 > .env
 - llm_enabled = api_key 非空;未配置时全链路走规则兜底,演示不中断
-- 两个角色:planner(→ 仅 IR JSON)/ narrator(结果集 → 2~3 句中文,禁造数字)
+- 两个角色:planner(→ 仅 IR JSON)/ narrator(结果集 → 2~3 句中文,禁造数字);
+  system prompt 由 app/llm/prompts.py 依语义层对象渲染(契约 §15.1),不再内联
 - api_key 永不回传前端,只给掩码 sk-***last4;日志脱敏
 """
 import json
@@ -15,6 +16,8 @@ import httpx
 
 from ..core.config import LLM_API_KEY_DEFAULT, LLM_BASE_URL_DEFAULT, LLM_MODEL_DEFAULT
 from ..core.db import query
+from ..semantic.loader import get_semantic
+from .prompts import render_narrator_system, render_planner_system
 
 logger = logging.getLogger("biz.llm")
 
@@ -104,28 +107,8 @@ class LLMGateway:
 
     # ---------------- planner:问题 → IR JSON ----------------
     def plan_ir(self, question: str, semantic, session_summary: dict, options: dict) -> dict | None:
-        metrics_desc = "; ".join(
-            f"{k}({m.get('name', '')})" for k, m in semantic.metrics.items()
-        )
-        schema = (
-            '{"metric": "指标key", "time": {"preset": "yesterday|last_7d|last_30d|this_month|last_month"'
-            ' 或 {"range": ["YYYY-MM-DD","YYYY-MM-DD"]}}, "dims": [], "filters": {"category": [],'
-            ' "channel": [], "user_type": []}, "granularity": "day", "compare": "none|prev_period",'
-            ' "order": "desc", "limit": 10}'
-        )
-        system = (
-            "你是电商 BI 系统的语义解析器,把用户的中文数据问题转换为查询 IR(中间表示)JSON。\n"
-            f"可用指标: {metrics_desc}\n"
-            "可用维度(dims): date, category, channel, user_type\n"
-            f"可用时间口径(preset): {', '.join(semantic.time_presets)}\n"
-            f"可用筛选值 category: {options.get('category', [])}; channel: {options.get('channel', [])};"
-            " user_type: [新客, 老客]\n"
-            f"IR JSON Schema(只能输出该 JSON,不要输出任何解释或代码块): {schema}\n"
-            "规则: 1) metric 必须从可用指标中选; 2) 时间不明确时用 last_30d; 3) 只有用户明确要求"
-            "与上一期对比时 compare 才用 prev_period; 4) 趋势类问题 dims 为 [\"date\"]; "
-            "5) 不确定的筛选值留空数组,绝不编造。\n"
-            "只输出一个 JSON 对象。"
-        )
+        # system prompt 由语义层对象渲染(指标/维度/筛值/术语/Schema,契约 §15.1)
+        system = render_planner_system(semantic, options)
         user = f"会话上下文: {json.dumps(session_summary, ensure_ascii=False)}\n用户问题: {question}"
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         last_err = None
@@ -148,11 +131,7 @@ class LLMGateway:
 
     # ---------------- narrator:结果集 → 2~3 句中文 ----------------
     def narrate(self, payload: dict) -> list[str] | None:
-        system = (
-            "你是电商 BI 助手的结论撰写器。根据给定的统计数据,输出 2~3 句简短的中文结论。\n"
-            "硬性要求:1) 禁止编造数字,所有数字必须与输入完全一致(原样引用);\n"
-            "2) 不出现 SQL/IR/接口等技术词;3) 每句一行,直接给句子,不要编号。"
-        )
+        system = render_narrator_system(get_semantic())
         user = "统计数据:\n" + json.dumps(payload, ensure_ascii=False)
         try:
             text = self.chat(

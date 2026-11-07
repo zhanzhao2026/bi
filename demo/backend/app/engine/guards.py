@@ -1,22 +1,24 @@
-"""守卫规则(契约 §7,顺序执行):薪酬/PII → refuse;明细/具体商品 → boundary;模糊指标词且无时间词 → clarify。"""
+"""守卫规则(契约 §7,顺序执行):薪酬/PII → refuse;明细/具体商品 → boundary;模糊指标词且无时间词 → clarify。
+
+词表(forbidden/boundary/clarify)全部来自 semantic/terms.yml(词是数据,
+经 app/semantic/loader 加载);命中顺序与判断逻辑留在本模块。
+"""
 import re
 
-REFUSE_WORDS = ["薪酬", "工资", "薪资", "工资条", "身份证", "手机号", "银行卡", "社保"]
-BOUNDARY_WORDS = ["明细", "订单列表", "订单详情", "具体商品", "哪款商品", "哪款产品", "哪个商品卖", "导出"]
-VAGUE_WORDS = ["销售额", "卖得怎么样", "卖得如何", "业绩", "生意怎么样", "做得怎么样"]
+from ..semantic.loader import get_semantic
 
-CLARIFY_OPTIONS = [
-    {"label": "最近30天", "value": "last_30d"},
-    {"label": "最近7天", "value": "last_7d"},
-    {"label": "昨天", "value": "yesterday"},
-    {"label": "上个月", "value": "last_month"},
-]
+_T = get_semantic().terms
 
-_TIME_RE = re.compile(
-    r"上个月|上月|本月|这个月|当月|昨天|昨日|最近7天|近7天|过去7天|最近一周|近一周|过去一周|上周"
-    r"|最近30天|近30天|过去30天|最近一个月|近一个月|过去一个月|30天|近1个月|今天|当日"
-    r"|\d{4}\s*年|\d{1,2}\s*月"
-)
+REFUSE_WORDS = [str(w) for w in (_T.get("forbidden") or [])]
+BOUNDARY_WORDS = [str(w) for w in (_T.get("boundary") or [])]
+_CLARIFY = _T.get("clarify") or {}
+VAGUE_WORDS = [str(w) for w in (_CLARIFY.get("vague_words") or [])]
+CLARIFY_OPTIONS = [dict(o) for o in (_CLARIFY.get("options") or [])]
+CLARIFY_ASSUME_METRIC = str(_CLARIFY.get("assume_metric") or "gmv")
+if not REFUSE_WORDS or not BOUNDARY_WORDS or not VAGUE_WORDS or not CLARIFY_OPTIONS:
+    raise RuntimeError("terms.yml 缺少 forbidden/boundary/clarify 词表(守卫拒答词不能为空)")
+
+_TIME_RE = re.compile(str(_CLARIFY.get("time_detect") or r"$^"))
 
 
 def has_time_word(question: str) -> bool:

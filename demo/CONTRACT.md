@@ -252,3 +252,44 @@ SSE(`POST /api/chat`,text/event-stream),事件:`stage`、`answer`、`error`、`d
 - **B(后端)**:`.venv/bin/uvicorn app.main:app --port 8310` 可启动;curl 验证 health/quickview/me/chat(SSE 4 事件)/caliber/feedback/全部 admin 端点;至少 8 个规则兜底场景端到端出正确答案卡类型与数字;切 `X-Demo-User: beauty` 行级过滤生效(audit 可见);无 LLM key 时全流程可用;golden eval 跑通
 - **C(前端)**:`npm install && npm run build` 通过;dev server 起后页面可交互(自测:空态渲染、发一问、答案卡渲染、口径弹层、后台五页、设置表单)
 - 通用:不改契约外文件、不 git commit、不动其他模块目录、UI 文案全中文、完成后输出「实现摘要+验证证据+遗留问题」
+
+## 15. Phase 1 · 语义层 v2(结构化拆分 + 依赖图 + 术语入层 + 指标单测)
+
+> 目标:消灭四个地基问题 —— 单表硬编码 / 派生指标表达式重抄 / 术语硬编码在代码 / 指标定义零测试。
+> **铁律:对外行为完全不变**——API 响应结构、IR Schema、答案卡、所有数字、前端全部零改动;eval 21/21 必须保持;现有问法命中行为不变。
+
+### 15.1 semantic/ 目录重构(代理B1,只写 backend/)
+```
+backend/semantic/
+├── models.yml          # 事实表声明:fact_order {alias: f, grain: order_id, date_col: pay_date};预留第二张表声明位(注释形式)
+├── metrics/
+│   ├── base.yml        # 基础指标 7 个:gmv/order_cnt/pay_user_cnt/item_cnt/refund_amt/refund_order_cnt(新增,SUM(f.is_refund))/new_order_cnt(新增,SUM(f.user_type='新客'))
+│   └── derived.yml     # 派生指标 4 个,用 depends_on + expr 引用:
+│                       #   arppu: {depends_on: [gmv, pay_user_cnt], expr: "{gmv}/NULLIF({pay_user_cnt},0)"}
+│                       #   refund_rate: {depends_on: [refund_amt, gmv], expr: "{refund_amt}/NULLIF({gmv},0)"}
+│                       #   refund_order_rate / new_order_ratio 同理;NULLIF 守卫写在 expr 模板里
+├── dims.yml            # 现 metrics.yaml 的 dims 节原样迁移
+├── terms.yml           # 自 rules.py 迁移的全部词表:synonyms(指标/维度/筛值同义词)/forbidden(拒答)/boundary(明细边界)/clarify(模糊词+assume_metric)/time_words(时间词→preset)
+└── version.yml         # version: 13, updated: 2026-11-07, changelog
+```
+规则:
+- loader 拓扑排序解析 depends_on,把 `{gmv}` 引用展开为完整 agg 字符串;**loader 对外暴露的 metric dict 字段与现在完全一致**(key/name/plain/unit/agg/ratio/derived/higher_is_bad),admin/caliber/编译器接口零改动;循环依赖/未知引用 → 启动即抛错(fail fast)
+- compiler 从 models.yml 读表名与别名,消灭硬编码 `fact_order`
+- rules.py 关键词/正则词表全部改为从 terms.yml 加载(词是数据,意图构造逻辑留在代码);行为回归:现有全部问法命中不变
+- 新建 `app/llm/prompts.py`:planner/narrator 的 system prompt 由语义层对象渲染(指标清单/维度/术语/守卫规则);gateway.py 改用之,不再内联 prompt 字符串
+- `demo/backend/migrate_v13.py`:幂等插入 semantic_version v13(author=数据小组,change_desc=语义层结构化拆分 models/metrics/terms + 指标依赖图,口径零变化;yaml_snapshot 存新 YAML 拼接)
+- 最终验证:重启 uvicorn(8310)后 curl 回归——health/quickview/chat 5 问(归因 2.40%→2.81%、美妆+0.42pp 不变)/caliber user+admin/admin 全套/eval run 21/21;测完保持 uvicorn 运行
+
+### 15.2 指标单测体系(代理B2,只写 backend/tests/ 与 backend/run_tests.sh)
+- 用标准库 unittest(**不新增依赖**);`bash demo/backend/run_tests.sh` 一键执行
+- 指标一致性:11 个指标 × 组合(全窗口/last30/last7/指定月/按类目/按渠道/按新客)——**独立手写的期望 SQL** 结果 vs 编译器管道(IR→编译→执行)结果,容差 1e-6;两者必须来自不同代码路径(期望 SQL 手写,不经过 loader/compiler)
+- 依赖图测试:展开后的 agg 必须包含所依赖基础指标的 agg 片段(防止绕开 depends_on 重抄);将 base.yml 复制到临时目录、篡改 gmv 的 agg,断言 arppu/refund_rate 展开结果随之变化(不污染真实文件)
+- 术语表测试:forbidden/boundary/clarify/synonyms 逐条走 rules.parse,断言意图与现状一致
+- 守卫回归:拒答/边界/澄清各 ≥3 用例
+- B2 编码完成后联测:若 semantic/ 新结构未就绪(B1 并行中),轮询 `semantic/metrics/` 目录出现再跑,最多等 10 分钟
+- 可选交付:`.github/workflows/demo-ci.yml`(push 时自动跑 run_tests.sh)
+- README 补「指标测试」一节(demo/README.md 的运维备忘处加一行即可,不动其他内容)
+
+### 15.3 验收
+- B1:重启后 curl 回归全过 + eval 21/21;报告:新目录树、arppu 依赖展开后的最终 SQL 文本、术语迁移清单(迁移前→后)、遗留问题
+- B2:run_tests.sh 全 PASS;报告:用例总数与分类、耗时;遗留问题

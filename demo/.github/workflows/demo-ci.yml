@@ -1,0 +1,45 @@
+# 指标单测体系 CI(契约 §15.2 可选交付):push 时自动跑 demo/backend/run_tests.sh。
+# 依赖 MySQL 服务 + 种子数据(seed=42 可复现);测试配置读取 demo/backend/.env。
+name: demo-ci
+
+on:
+  push:
+
+jobs:
+  metric-tests:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装后端依赖
+        working-directory: demo/backend
+        run: pip install -r requirements.txt
+
+      - name: 准备 .env
+        working-directory: demo/backend
+        run: cp .env.example .env
+
+      - name: 初始化数据库并造数
+        working-directory: demo/db
+        run: |
+          python init_db.py
+          python seed_data.py
+
+      - name: 指标单测(语义层守门)
+        run: bash demo/backend/run_tests.sh
