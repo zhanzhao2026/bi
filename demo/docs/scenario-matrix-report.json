@@ -1,0 +1,2130 @@
+{
+ "ran_at": "2026-11-07 20:59:26",
+ "base": "http://127.0.0.1:8310",
+ "asof": "2026-11-06",
+ "summary": {
+  "total": 52,
+  "passed": 52,
+  "pass_rate": 100.0,
+  "groups": {
+   "①时间": {
+    "total": 16,
+    "passed": 16
+   },
+   "②指标": {
+    "total": 12,
+    "passed": 12
+   },
+   "③维度筛选": {
+    "total": 7,
+    "passed": 7
+   },
+   "④商品下钻": {
+    "total": 3,
+    "passed": 3
+   },
+   "⑤排名": {
+    "total": 4,
+    "passed": 4
+   },
+   "⑥边界": {
+    "total": 3,
+    "passed": 3
+   },
+   "⑦不可表达": {
+    "total": 5,
+    "passed": 5
+   },
+   "⑧多轮继承": {
+    "total": 2,
+    "passed": 2
+   }
+  },
+  "unsupportable_group_all_honest": true
+ },
+ "items": [
+  {
+   "id": "T01",
+   "group": "①时间",
+   "q": "昨天的GMV是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv",
+    "time": {
+     "preset": "yesterday"
+    }
+   },
+   "rule": "规则=yesterday/gmv 汇总(单测既有结论)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "preset": "yesterday"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "T02",
+   "group": "①时间",
+   "q": "前天卖了多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv",
+    "time": {
+     "range": [
+      "2026-11-04",
+      "2026-11-04"
+     ]
+    }
+   },
+   "rule": "规则=error(「卖了多少」无指标词;timelex 前天已支持)",
+   "pre": [],
+   "note": "期望范围=[前天,前天]",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "range": [
+      "2026-11-04",
+      "2026-11-04"
+     ]
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "T03",
+   "group": "①时间",
+   "q": "最近3天订单数是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "order_cnt",
+    "time": {
+     "range": [
+      "2026-11-04",
+      "2026-11-06"
+     ]
+    }
+   },
+   "rule": "规则=range 最近3天/order_cnt(v14 timelex)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "order_cnt",
+    "time": {
+     "range": [
+      "2026-11-04",
+      "2026-11-06"
+     ]
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "T04",
+   "group": "①时间",
+   "q": "最近2周GMV怎么样?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv",
+    "time": {
+     "range": [
+      "2026-10-24",
+      "2026-11-06"
+     ]
+    }
+   },
+   "rule": "规则=range 最近2周(14天窗)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "range": [
+      "2026-10-24",
+      "2026-11-06"
+     ]
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "day",
+    "compare": "prev_period",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "T05",
+   "group": "①时间",
+   "q": "本周GMV是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv",
+    "time": {
+     "range": [
+      "2026-11-02",
+      "2026-11-06"
+     ]
+    }
+   },
+   "rule": "规则=range 本周一~水位(v14)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "range": [
+      "2026-11-02",
+      "2026-11-06"
+     ]
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "T06",
+   "group": "①时间",
+   "q": "上周退款金额是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "refund_amt",
+    "time_any": [
+     {
+      "preset": "last_7d"
+     },
+     {
+      "range": [
+       "2026-10-26",
+       "2026-11-01"
+      ]
+     }
+    ]
+   },
+   "rule": "规则=last_7d preset(time_words「上周」)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "refund_amt",
+    "time": {
+     "preset": "last_7d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "T07",
+   "group": "①时间",
+   "q": "2026年10月女装GMV是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv",
+    "time": {
+     "range": [
+      "2026-10-01",
+      "2026-10-31"
+     ]
+    },
+    "filters": {
+     "category": [
+      "女装"
+     ]
+    }
+   },
+   "rule": "规则=2026-10 全月+女装(eval #3 同型;此前 LLM 错降级 this_month)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "range": [
+      "2026-10-01",
+      "2026-10-31"
+     ]
+    },
+    "dims": [],
+    "filters": {
+     "category": [
+      "女装"
+     ],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "T08",
+   "group": "①时间",
+   "q": "10月美妆订单数是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "order_cnt",
+    "time": {
+     "range": [
+      "2026-10-01",
+      "2026-10-31"
+     ]
+    },
+    "filters": {
+     "category": [
+      "美妆"
+     ]
+    }
+   },
+   "rule": "规则=2026-10 全月+美妆",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "order_cnt",
+    "time": {
+     "range": [
+      "2026-10-01",
+      "2026-10-31"
+     ]
+    },
+    "dims": [],
+    "filters": {
+     "category": [
+      "美妆"
+     ],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "T09",
+   "group": "①时间",
+   "q": "10月下旬GMV是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv",
+    "time": {
+     "range": [
+      "2026-10-21",
+      "2026-10-31"
+     ]
+    }
+   },
+   "rule": "规则=旬区间(v14 timelex)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "range": [
+      "2026-10-21",
+      "2026-10-31"
+     ]
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "T10",
+   "group": "①时间",
+   "q": "10月下旬比上旬客单价怎么样?",
+   "expect": {
+    "card": "summary",
+    "metric": "arppu",
+    "time": {
+     "range": [
+      "2026-10-21",
+      "2026-10-31"
+     ]
+    },
+    "compare": "range"
+   },
+   "rule": "规则=主窗口+compare 显式区间(§16.1)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "arppu",
+    "time": {
+     "range": [
+      "2026-10-21",
+      "2026-10-31"
+     ]
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": {
+     "type": "range",
+     "range": [
+      "2026-10-01",
+      "2026-10-10"
+     ]
+    },
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "T11",
+   "group": "①时间",
+   "q": "今年以来GMV是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv",
+    "time": {
+     "range": [
+      "2026-01-01",
+      "2026-11-06"
+     ]
+    }
+   },
+   "rule": "规则=年初至今(v14)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "range": [
+      "2026-01-01",
+      "2026-11-06"
+     ]
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "T12",
+   "group": "①时间",
+   "q": "双十一那几天的GMV怎么样?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv",
+    "time": {
+     "range": [
+      "2026-11-01",
+      "2026-11-06"
+     ]
+    }
+   },
+   "rule": "规则=last_30d(无双十一词,语义漂移);LLM 须给截断 range 11-01~11-06",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "range": [
+      "2026-11-01",
+      "2026-11-06"
+     ]
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "T13",
+   "group": "①时间",
+   "q": "从2026-10-01到2026-10-15的GMV是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv",
+    "time": {
+     "range": [
+      "2026-10-01",
+      "2026-10-15"
+     ]
+    }
+   },
+   "rule": "规则=从X到Y 显式区间(v14)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "range": [
+      "2026-10-01",
+      "2026-10-15"
+     ]
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "T14",
+   "group": "①时间",
+   "q": "上个月客单价是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "arppu",
+    "time": {
+     "preset": "last_month"
+    }
+   },
+   "rule": "规则=last_month/arppu",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "arppu",
+    "time": {
+     "preset": "last_month"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "T15",
+   "group": "①时间",
+   "q": "这个月GMV是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv",
+    "time": {
+     "preset": "this_month"
+    }
+   },
+   "rule": "规则=this_month",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "preset": "this_month"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "T16",
+   "group": "①时间",
+   "q": "近14天退款率是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "refund_rate",
+    "time": {
+     "range": [
+      "2026-10-24",
+      "2026-11-06"
+     ]
+    }
+   },
+   "rule": "规则=range 14天/refund_rate",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "refund_rate",
+    "time": {
+     "range": [
+      "2026-10-24",
+      "2026-11-06"
+     ]
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "day",
+    "compare": "prev_period",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "M01",
+   "group": "②指标",
+   "q": "最近30天GMV是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    }
+   },
+   "rule": "规则=gmv(eval #1)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "M02",
+   "group": "②指标",
+   "q": "最近30天营业额是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    }
+   },
+   "rule": "规则=「营业额」同义词→gmv",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "M03",
+   "group": "②指标",
+   "q": "上个月流水多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv",
+    "time": {
+     "preset": "last_month"
+    }
+   },
+   "rule": "规则=「流水」同义词→gmv + last_month",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "preset": "last_month"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "M04",
+   "group": "②指标",
+   "q": "最近30天总共有多少笔支付订单?",
+   "expect": {
+    "card": "summary",
+    "metric": "order_cnt",
+    "time": {
+     "preset": "last_30d"
+    }
+   },
+   "rule": "规则=order_cnt(eval #4 同型)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "order_cnt",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "M05",
+   "group": "②指标",
+   "q": "最近30天有多少个下单支付的用户?",
+   "expect": {
+    "card": "summary",
+    "metric": "pay_user_cnt",
+    "time": {
+     "preset": "last_30d"
+    }
+   },
+   "rule": "规则=pay_user_cnt(eval #5)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "pay_user_cnt",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "M06",
+   "group": "②指标",
+   "q": "最近30天卖了多少件?",
+   "expect": {
+    "card": "summary",
+    "metric": "item_cnt",
+    "time": {
+     "preset": "last_30d"
+    }
+   },
+   "rule": "规则=「卖了多少件」→item_cnt",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "item_cnt",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "M07",
+   "group": "②指标",
+   "q": "最近30天的客单价是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "arppu",
+    "time": {
+     "preset": "last_30d"
+    }
+   },
+   "rule": "规则=arppu(eval #6)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "arppu",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "M08",
+   "group": "②指标",
+   "q": "最近30天退款了多少钱?",
+   "expect": {
+    "card": "summary",
+    "metric": "refund_amt",
+    "time": {
+     "preset": "last_30d"
+    }
+   },
+   "rule": "规则=refund_amt(eval #7)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "refund_amt",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "M09",
+   "group": "②指标",
+   "q": "最近30天整体退款率是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "refund_rate",
+    "time": {
+     "preset": "last_30d"
+    }
+   },
+   "rule": "规则=refund_rate(eval #8)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "refund_rate",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "M10",
+   "group": "②指标",
+   "q": "最近30天订单退款率是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "refund_order_rate",
+    "time": {
+     "preset": "last_30d"
+    }
+   },
+   "rule": "规则=refund_order_rate",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "refund_order_rate",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "M11",
+   "group": "②指标",
+   "q": "最近30天新客订单占比是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "new_order_ratio",
+    "time": {
+     "preset": "last_30d"
+    }
+   },
+   "rule": "规则=new_order_ratio",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "new_order_ratio",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": [
+      "新客"
+     ]
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "M12",
+   "group": "②指标",
+   "q": "最近30天新客订单数是多少?",
+   "expect": {
+    "any_of": [
+     {
+      "metric": "new_order_cnt"
+     },
+     {
+      "metric": "order_cnt",
+      "filters": {
+       "user_type": [
+        "新客"
+       ]
+      }
+     }
+    ],
+    "card": "summary",
+    "time": {
+     "preset": "last_30d"
+    }
+   },
+   "rule": "规则=order_cnt+新客筛(词表无 new_order_cnt 词;LLM 可直选 new_order_cnt)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "order_cnt",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": [
+      "新客"
+     ]
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "F01",
+   "group": "③维度筛选",
+   "q": "美妆最近30天GMV是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    },
+    "filters": {
+     "category": [
+      "美妆"
+     ]
+    }
+   },
+   "rule": "规则=美妆筛(类目词)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [
+      "美妆"
+     ],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "F02",
+   "group": "③维度筛选",
+   "q": "直播渠道最近7天退款率是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "refund_rate",
+    "time": {
+     "preset": "last_7d"
+    },
+    "filters": {
+     "channel": [
+      "直播"
+     ]
+    }
+   },
+   "rule": "规则=直播+last_7d+refund_rate",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "refund_rate",
+    "time": {
+     "preset": "last_7d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [
+      "直播"
+     ],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "F03",
+   "group": "③维度筛选",
+   "q": "最近30天新客的GMV是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    },
+    "filters": {
+     "user_type": [
+      "新客"
+     ]
+    }
+   },
+   "rule": "规则=新客筛(单值才筛)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": [
+      "新客"
+     ]
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "F04",
+   "group": "③维度筛选",
+   "q": "美妆直播渠道最近30天客单价是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "arppu",
+    "time": {
+     "preset": "last_30d"
+    },
+    "filters": {
+     "category": [
+      "美妆"
+     ],
+     "channel": [
+      "直播"
+     ]
+    }
+   },
+   "rule": "规则=类目+渠道复合筛选",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "arppu",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [
+      "美妆"
+     ],
+     "channel": [
+      "直播"
+     ],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "F05",
+   "group": "③维度筛选",
+   "q": "推广渠道最近30天GMV是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    },
+    "filters": {
+     "channel": [
+      "付费推广"
+     ]
+    }
+   },
+   "rule": "规则=「推广」别名→付费推广(terms.channel_aliases)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [
+      "付费推广",
+      "自然流量",
+      "私域",
+      "直播"
+     ],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "F06",
+   "group": "③维度筛选",
+   "q": "私域最近30天订单数是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "order_cnt",
+    "time": {
+     "preset": "last_30d"
+    },
+    "filters": {
+     "channel": [
+      "私域"
+     ]
+    }
+   },
+   "rule": "规则=私域+order_cnt",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "order_cnt",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [
+      "私域"
+     ],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "F07",
+   "group": "③维度筛选",
+   "q": "母婴最近30天有多少个下单支付的用户?",
+   "expect": {
+    "card": "summary",
+    "metric": "pay_user_cnt",
+    "time": {
+     "preset": "last_30d"
+    },
+    "filters": {
+     "category": [
+      "母婴"
+     ]
+    }
+   },
+   "rule": "规则=母婴+pay_user_cnt",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "pay_user_cnt",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [
+      "母婴"
+     ],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "P01",
+   "group": "④商品下钻",
+   "q": "美妆里哪些商品退款最多?",
+   "expect": {
+    "card": "rank",
+    "metric": "refund_amt",
+    "dims_any": [
+     [
+      "product"
+     ],
+     [
+      "category",
+      "product"
+     ]
+    ],
+    "filters": {
+     "category": [
+      "美妆"
+     ]
+    },
+    "order": "desc"
+   },
+   "rule": "规则=product rank(§16.2 v14,哪些+商品)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "rank",
+   "ir": {
+    "metric": "refund_amt",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [
+     "product"
+    ],
+    "filters": {
+     "category": [
+      "美妆"
+     ],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "P02",
+   "group": "④商品下钻",
+   "q": "最近30天卖得最好的10个商品",
+   "expect": {
+    "card": "rank",
+    "metric": "gmv",
+    "dims": [
+     "product"
+    ],
+    "limit": 10,
+    "order": "desc"
+   },
+   "rule": "规则=product rank limit10(「卖得最好」+「商品」)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "rank",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [
+     "product"
+    ],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "P03",
+   "group": "④商品下钻",
+   "q": "最近30天客单价最高的商品是哪个?",
+   "expect": {
+    "card": "rank",
+    "metric": "arppu",
+    "dims": [
+     "product"
+    ],
+    "order": "desc"
+   },
+   "rule": "规则=product rank(哪个+商品;「最高」不在规则排名词表但商品词兜底)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "rank",
+   "ir": {
+    "metric": "arppu",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [
+     "product"
+    ],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 1
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "R01",
+   "group": "⑤排名",
+   "q": "最近30天哪个类目GMV最高?",
+   "expect": {
+    "card": "rank",
+    "metric": "gmv",
+    "dims": [
+     "category"
+    ],
+    "limit": 1,
+    "order": "desc",
+    "filters_empty": [
+     "category"
+    ]
+   },
+   "rule": "规则=rank category(「哪个」);此前 LLM 曾把 7 类目塞 filters 求合计",
+   "pre": [],
+   "note": "filters.category 必须为空(禁止塞候选值)",
+   "pass": true,
+   "card_type": "rank",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [
+     "category"
+    ],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 1
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "R02",
+   "group": "⑤排名",
+   "q": "最近30天GMV前三的类目",
+   "expect": {
+    "card": "rank",
+    "metric": "gmv",
+    "dims": [
+     "category"
+    ],
+    "limit": 3,
+    "order": "desc"
+   },
+   "rule": "规则=rank category limit10(规则不解析「前三」条数)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "rank",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [
+     "category"
+    ],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 3
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "R03",
+   "group": "⑤排名",
+   "q": "最近30天退款金额最低的类目",
+   "expect": {
+    "card": "rank",
+    "metric": "refund_amt",
+    "dims": [
+     "category"
+    ],
+    "order": "asc"
+   },
+   "rule": "规则=summary(「最低」不在规则排名词表,存在语义漂移);LLM 须 dims+asc",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "rank",
+   "ir": {
+    "metric": "refund_amt",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [
+     "category"
+    ],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "asc",
+    "limit": 1
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "R04",
+   "group": "⑤排名",
+   "q": "最近30天各渠道GMV对比",
+   "expect": {
+    "card": "rank",
+    "metric": "gmv",
+    "dims": [
+     "channel"
+    ],
+    "filters_empty": [
+     "channel"
+    ]
+   },
+   "rule": "规则=rank channel(「各渠道」)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "rank",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [
+     "channel"
+    ],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "B01",
+   "group": "⑥边界",
+   "q": "员工平均工资是多少?",
+   "expect": {
+    "card": "refuse",
+    "status": "refuse"
+   },
+   "rule": "规则=refuse 守卫(terms.forbidden「工资」)",
+   "pre": [],
+   "note": "守卫卡,不经 planner",
+   "pass": true,
+   "card_type": "refuse",
+   "ir": null,
+   "llm_used": false,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "refuse"
+  },
+  {
+   "id": "B02",
+   "group": "⑥边界",
+   "q": "帮我看下具体订单明细",
+   "expect": {
+    "card": "boundary",
+    "status": "boundary"
+   },
+   "rule": "规则=boundary 守卫(terms.boundary「明细」)",
+   "pre": [],
+   "note": "守卫卡,不经 planner",
+   "pass": true,
+   "card_type": "boundary",
+   "ir": null,
+   "llm_used": false,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "boundary"
+  },
+  {
+   "id": "B03",
+   "group": "⑥边界",
+   "q": "竞品A的GMV是多少?",
+   "expect": {
+    "card": [
+     "error",
+     "clarify"
+    ]
+   },
+   "rule": "规则=summary(gmv 词命中,语义漂移:拿自家 GMV 回答竞品问题);LLM 必须诚实拒答/澄清",
+   "pre": [],
+   "note": "答错比拒答严重",
+   "pass": true,
+   "card_type": "error",
+   "ir": null,
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "error"
+  },
+  {
+   "id": "U01",
+   "group": "⑦不可表达",
+   "q": "女装今年以来退款金额比数码多多少?",
+   "expect": {
+    "card": "error",
+    "status": "error",
+    "title": "这个问题我答不了"
+   },
+   "rule": "规则=summary(两类目合并求和,数字对但答非所问);LLM 必须 unsupportable",
+   "pre": [],
+   "note": "核心危险用例(任务背景失分场景同型)",
+   "pass": true,
+   "card_type": "error",
+   "ir": null,
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "error"
+  },
+  {
+   "id": "U02",
+   "group": "⑦不可表达",
+   "q": "女装客单价比数码高多少?",
+   "expect": {
+    "card": "error",
+    "status": "error",
+    "title": "这个问题我答不了"
+   },
+   "rule": "规则=summary(合并筛选);LLM 必须 unsupportable",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "error",
+   "ir": null,
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "error"
+  },
+  {
+   "id": "U03",
+   "group": "⑦不可表达",
+   "q": "明年GMV预测一下",
+   "expect": {
+    "card": "error",
+    "status": "error",
+    "title": "这个问题我答不了"
+   },
+   "rule": "规则=summary(未来时间照查,结果为空);LLM 必须 unsupportable(预测类)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "error",
+   "ir": null,
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "error"
+  },
+  {
+   "id": "U04",
+   "group": "⑦不可表达",
+   "q": "利润有多少?",
+   "expect": {
+    "card": "error",
+    "status": "error",
+    "title": "这个问题我答不了"
+   },
+   "rule": "规则=error(无指标词,规则解析失败);LLM 必须 unsupportable(语义层无利润)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "error",
+   "ir": null,
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "error"
+  },
+  {
+   "id": "U05",
+   "group": "⑦不可表达",
+   "q": "双十二的GMV有多少?",
+   "expect": {
+    "card": "error",
+    "status": "error",
+    "title": "这个问题我答不了"
+   },
+   "rule": "规则=summary(12月区间全部晚于水位,查空);LLM 必须 unsupportable(数据未发生)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "error",
+   "ir": null,
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "error"
+  },
+  {
+   "id": "C01",
+   "group": "⑧多轮继承",
+   "q": "那订单数呢?",
+   "expect": {
+    "card": "summary",
+    "metric": "order_cnt",
+    "time": {
+     "range": [
+      "2026-10-01",
+      "2026-10-31"
+     ]
+    },
+    "filters": {
+     "category": [
+      "美妆"
+     ]
+    }
+   },
+   "rule": "规则=追问继承(上一轮 IR 继承时间/筛选);LLM 需借会话上下文同答",
+   "pre": [
+    "2026年10月美妆的GMV是多少?"
+   ],
+   "note": "同 session:先问美妆 10 月 GMV,再追问订单数",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "order_cnt",
+    "time": {
+     "range": [
+      "2026-10-01",
+      "2026-10-31"
+     ]
+    },
+    "dims": [],
+    "filters": {
+     "category": [
+      "美妆"
+     ],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [
+    "summary"
+   ],
+   "done_status": "ok"
+  },
+  {
+   "id": "C02",
+   "group": "⑧多轮继承",
+   "q": "那GMV呢?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv",
+    "time": {
+     "preset": "last_7d"
+    },
+    "filters": {
+     "channel": [
+      "直播"
+     ]
+    }
+   },
+   "rule": "规则=追问继承;LLM 需借会话上下文同答",
+   "pre": [
+    "最近7天直播渠道的退款率是多少?"
+   ],
+   "note": "同 session:先问直播 7 天退款率,再追问 GMV",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "preset": "last_7d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [
+      "直播"
+     ],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [
+    "summary"
+   ],
+   "done_status": "ok"
+  }
+ ]
+}
