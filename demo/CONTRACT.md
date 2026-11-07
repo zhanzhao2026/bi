@@ -293,3 +293,36 @@ backend/semantic/
 ### 15.3 验收
 - B1:重启后 curl 回归全过 + eval 21/21;报告:新目录树、arppu 依赖展开后的最终 SQL 文本、术语迁移清单(迁移前→后)、遗留问题
 - B2:run_tests.sh 全 PASS;报告:用例总数与分类、耗时;遗留问题
+
+## 16. Phase 2 · 语义层表达力(时间表达式 / BM25 检索 / 层级下钻)
+
+> 目标:让语义层从「5 个写死的 preset + 平面维度」升级为可组合的表达力层。
+> **回归铁律不变**:173 个既有单测 PASS、eval 21/21、现有问法行为不变;本阶段允许**新增**能力(新问法命中)。
+> 金线:每个新能力都要有「手写 SQL 对拍」的端到端数字验证,不只是解析测试。
+
+### 16.1 时间表达式层(代理P2-A,只写 backend/)
+- 新建 `app/semantic/timelex.py`:中文时间短语 → IR time 结构(`{range:[d1,d2]}` 或 `{preset}`),纯函数、无副作用:
+  - 保留现有 5 preset;新增:最近N天/N周、昨天/前天、本周/上周、本月/上月、N月与2026年N月(已有)、**上旬/中旬/下旬**(「10月下旬」「最近一期下旬」;旬=1-10/11-20/21-月末)、「今年以来/年初至今」、显式「从X到Y」区间
+  - 相邻比较:「本周比上周」「下旬比上旬」「最近7天比上一个7天」→ 主窗口 + compare 的 range 对(平移等长),替代现有 prev_period 仅按 preset 平移的写法
+- rules.py 时间解析改走 timelex(terms.yml 的 time_words 仍提供词→意图映射);**现有时间问法解析结果逐字不变**(B2 的 time_words 用例必须保持 PASS)
+- 版本登记 v14(migrate_v14.py,幂等,同 §15.1 模式);scripts/reset_db.sh 由主控链接
+
+### 16.2 层级维度下钻(代理P2-A)
+- dims.yml:category 增加层级声明 `children: [product]`;dims 增 `product`(column=f.product_id,name_table=dim_product,name_col=product_name)
+- IR dims 支持 `["category","product"]` 或 `["product"]`(自动带上其父 category 名列);compiler 支持 product 维 JOIN dim_product
+- **聚合守卫(红线)**:product 维查询只输出聚合行(每行=该商品区间内聚合),绝不出现订单级明细;答案卡 scope_note 加「商品聚合视角,不含订单明细」;product 维与除 category/date 外的其他维组合 → 澄清(防笛卡尔爆炸)
+- 新问法验收:「美妆里哪些商品退款最多」「最近30天卖得最好的10个商品」「美妆哪个商品客单价最高」→ rank 卡(商品行:商品名/所属类目/指标值);rules 增「商品/爆款/哪款商品卖/商品维度」词(入 terms.yml synonyms.dimension)
+- 端到端对拍:至少 3 条手写 SQL 对拍(如美妆 last30 退款金额 TOP1 商品、全店 last30 GMV TOP3)
+
+### 16.3 BM25 语义检索(代理P2-B,backend/semantic+api/admin.py + frontend/)
+- 新建 `app/semantic/retrieval.py`:纯 Python BM25(k1=1.5,b=0.75),**零新增依赖**;中文 bigram 分词;语料=metrics(name/plain/unit/synonyms 相关词)+dims(name/desc/user_terms)+terms 词表;启动时建索引、语义版本变更时重建
+- `GET /api/admin/semantic/search?q=&k=5`:返回 `[{kind: metric|dim|term, key, name, score, reason}]`(reason=命中词说明);错误处理与现有 admin 端点一致
+- planner 集成:LLM 启用时 system prompt 的指标清单改为**检索 top-k 注入**(k 默认 8;q=用户问题;检索空或指标总数≤12 时回退全量,当前 11 指标=回退全量,行为不变);narrator 不受影响
+- 前端语义管理页:顶部加「语义检索测试」卡片(输入框+检索按钮+结果表:类型/名称/得分/命中原因);仅后台可见,用户视角不出现;`npm run build` 通过
+- 单测:检索质量 ≥10 例(「退款率为什么高」top1=refund_rate;「客单价」top1=arppu;「新客」→ new_order_ratio/new_order_cnt 进 top3;「美妆退款」→ refund_rate+category 维等)+ 边界(空 q、纯符号、超长 q)
+
+### 16.4 验收
+- P2-A/P2-B 共同回归:173 既有单测 + eval 21/21 全 PASS;uvicorn 保持运行
+- P2-A:timelex 解析表 ≥20 例;时间/下钻端到端对拍 ≥6 条;报告含「10月下旬数码客单价 vs 上旬」的完整对拍数字
+- P2-B:检索单测 ≥10 例;前端 build 通过;报告含 3 个检索查询的实际 top-k
+- 主控浏览器实测:3 条新问法(旬对比/商品下钻/检索面板)+ 提交

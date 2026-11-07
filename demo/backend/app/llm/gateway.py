@@ -16,6 +16,7 @@ import httpx
 
 from ..core.config import LLM_API_KEY_DEFAULT, LLM_BASE_URL_DEFAULT, LLM_MODEL_DEFAULT
 from ..core.db import query
+from ..semantic import retrieval
 from ..semantic.loader import get_semantic
 from .prompts import render_narrator_system, render_planner_system
 
@@ -24,6 +25,8 @@ logger = logging.getLogger("biz.llm")
 SETTLE_KEYS = ("llm_base_url", "llm_model", "llm_api_key")
 _TIMEOUT = 20.0
 _TEMPERATURE = 0.2
+_RETRIEVE_K = 8          # §16.3:planner 指标清单检索注入条数
+_RETRIEVE_FULL_MAX = 12  # 指标总数 ≤ 12 时回退全量(当前 11 指标 = 恒全量)
 
 
 def mask_key(key: str) -> str:
@@ -106,9 +109,29 @@ class LLMGateway:
         return content or ""
 
     # ---------------- planner:问题 → IR JSON ----------------
+    @staticmethod
+    def _retrieved_metric_keys(question: str, semantic) -> list[str] | None:
+        """§16.3:指标总数 > 12 时,以用户问题为 q 检索指标清单 top-k 注入。
+
+        返回 None = 回退全量(指标总数 ≤ 12 / 检索为空 / 检索异常,行为不变)。
+        """
+        try:
+            total = len(getattr(semantic, "metrics", {}) or {})
+            if total <= _RETRIEVE_FULL_MAX:
+                return None
+            hits = retrieval.get_index().search(question, k=_RETRIEVE_K)
+            keys = [h.get("key") for h in hits
+                    if h.get("kind") == "metric" and h.get("key") in semantic.metrics]
+            return keys or None
+        except Exception as e:
+            logger.warning("planner metric retrieval failed, fallback to full list: %s", e)
+            return None
+
     def plan_ir(self, question: str, semantic, session_summary: dict, options: dict) -> dict | None:
-        # system prompt 由语义层对象渲染(指标/维度/筛值/术语/Schema,契约 §15.1)
-        system = render_planner_system(semantic, options)
+        # system prompt 由语义层对象渲染(指标/维度/筛值/术语/Schema,契约 §15.1);
+        # 指标清单按 §16.3 检索注入(≤12 个指标时回退全量,dims/术语始终全量)
+        system = render_planner_system(semantic, options,
+                                       metric_keys=self._retrieved_metric_keys(question, semantic))
         user = f"会话上下文: {json.dumps(session_summary, ensure_ascii=False)}\n用户问题: {question}"
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         last_err = None

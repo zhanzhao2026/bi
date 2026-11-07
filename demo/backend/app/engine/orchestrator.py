@@ -208,16 +208,22 @@ class Orchestrator:
             status = "error"
 
         if card is None:
-            ok, err = compiler.validate_ir(ir, self.semantic, options)
-            if not ok:
-                card = self._error_card(trace_id)
-                status = "error"
+            # §16.2 聚合守卫先行:商品维与除类目/日期外的维度组合 → 澄清(防笛卡尔爆炸)
+            if self._needs_dim_clarify(ir, parsed):
+                card = self._clarify_dims_card(trace_id)
+                status = "clarify"
+            else:
+                ok, err = compiler.validate_ir(ir, self.semantic, options)
+                if not ok:
+                    card = self._error_card(trace_id)
+                    status = "error"
 
         if card is not None:
             timings["understand"] = _ms(t0)
             timings["plan"] = _ms(t_plan)
             yield ("stage", {"step": "understand", "label": "理解问题", "status": "done",
-                             "detail": "该问题暂无法映射到现有指标"})
+                             "detail": ("该问题暂无法映射到现有指标" if status == "error"
+                                        else "需要先确认分析维度")})
             yield ("stage", {"step": "query", "label": "查询数据", "status": "start",
                              "detail": "该问题无需查询数据"})
             yield ("stage", {"step": "query", "label": "查询数据", "status": "done",
@@ -251,15 +257,16 @@ class Orchestrator:
                      timings, t0, llm_used, llm_model):
         sem = self.semantic
         start, end = compiler.resolve_time(ir["time"], data_as_of)
-        prev = compiler.prev_range(start, end) if ir.get("compare") == "prev_period" else None
+        # 对比窗口:prev_period 等长平移,或「X比Y」解析出的显式 range(§16.1)
+        prev = compiler.resolve_compare(ir, start, end)
 
         ir_time = ir.get("time") or {}
         time_label = compiler.time_label(ir_time)
         period = self._period_text(ir_time, start, end)
-        prev_label = self._prev_label(ir_time.get("preset"))
+        prev_label = self._prev_label(ir_time.get("preset"), ir.get("compare"))
         metric_name = sem.metric_name(ir["metric"])
         card_kind = (parsed.get("card") if parsed.get("ok") else None) or self._card_kind_from_ir(ir)
-        dim_label = {"category": "类目", "channel": "渠道"}.get(
+        dim_label = {"category": "类目", "channel": "渠道", "product": "商品"}.get(
             (parsed or {}).get("dim") or "", "类目")
 
         # understand done
@@ -360,12 +367,15 @@ class Orchestrator:
         notes: list[str] = []
         assume_text = None
         prev_ir = (session_ctx or {}).get("ir") if session_ctx else None
+        pair = p.get("time_pair")
 
-        # --- 时间:assume > 问题显式时间词 > 继承上一轮 > 默认 ---
+        # --- 时间:assume > 「X比Y」对比问法 > 问题显式时间词 > 继承上一轮 > 默认 ---
         time_ir = None
         assume_time = self._parse_assume(assume)
         if assume_time is not None:
             time_ir = assume_time
+        elif pair:
+            time_ir = {"range": list(pair["main"])}
         elif p.get("time_preset"):
             time_ir = {"preset": p["time_preset"]}
         elif p.get("time_range"):
@@ -375,6 +385,12 @@ class Orchestrator:
             notes.append("已沿用上一轮的时间范围。")
         else:
             time_ir = {"preset": DEFAULT_PRESET}
+        if pair and not assume_time:
+            # §16.1:叙事注明对比区间
+            notes.append(
+                f"已按「{pair['main_label']}比{pair['compare_label']}」解析对比区间:"
+                f"本期 {pair['main'][0]}~{pair['main'][1]},"
+                f"对比期 {pair['compare'][0]}~{pair['compare'][1]}。")
 
         # --- 筛选:问题显式词 > 继承上一轮 ---
         p_filters = p.get("filters") or {}
@@ -405,7 +421,12 @@ class Orchestrator:
                 notes.append("已沿用上一轮的分析指标。")
         if p.get("vague"):
             assume_text = f"按 GMV 理解「{p['vague']}」"
-        compare = "prev_period" if p.get("want_compare") else "none"
+        if pair and not assume_time:
+            # 「X比Y」显式对比窗口(§16.1),替代 prev_period 平移
+            compare = {"type": "range", "range": list(pair["compare"]),
+                       "label": str(pair.get("compare_label") or "")}
+        else:
+            compare = "prev_period" if p.get("want_compare") else "none"
         ir = {
             "metric": metric,
             "time": time_ir,
@@ -414,7 +435,7 @@ class Orchestrator:
             "granularity": "day",
             "compare": compare,
             "order": "desc",
-            "limit": 10,
+            "limit": int(p.get("limit") or 10),
         }
         return ir, notes, assume_text
 
@@ -441,6 +462,20 @@ class Orchestrator:
             return {"range": rng}
         return None
 
+    def _prev_label(self, preset, compare=None) -> str:
+        """对比期人话标签:「X比Y」问法用解析出的对比侧短语(如「上旬」)。"""
+        if isinstance(compare, dict):
+            lbl = str(compare.get("label") or "").strip()
+            if lbl:
+                return lbl
+        return {
+            "last_30d": "上一个30天",
+            "last_7d": "上一个7天",
+            "yesterday": "前一天",
+            "this_month": "上个月",
+            "last_month": "再上个月",
+        }.get(preset, "上一周期")
+
     # ================= 查询与数据构建 =================
 
     def _run(self, ir: dict, start: str, end: str, permission, sqls: list) -> list[dict]:
@@ -453,7 +488,9 @@ class Orchestrator:
             val = _f(r.get("val"))
             if val is not None and is_ratio:
                 val *= 100.0  # yaml agg 输出小数比率,统一转为百分数(2.81 = 2.81%)
-            out.append({"dim": r.get("dim_name"), "val": val})
+            out.append({"dim": r.get("dim_name"), "val": val,
+                        # 商品维(§16.2)自动带父类目名列;其他维为 None
+                        "parent": r.get("dim_parent")})
         return out
 
     def _build_data(self, ir, parsed, permission, start, end, prev, sqls, card_kind) -> dict:
@@ -471,7 +508,8 @@ class Orchestrator:
         ctx = {"ir": ir, "permission": permission, "start": start, "end": end,
                "prev": prev, "time_label": compiler.time_label(ir.get("time")),
                "period": self._period_text(ir.get("time"), start, end),
-               "prev_label": self._prev_label((ir.get("time") or {}).get("preset")),
+               "prev_label": self._prev_label((ir.get("time") or {}).get("preset"),
+                                              ir.get("compare")),
                "parsed": parsed, "domain": domain, "sqls": sqls}
 
         if card_kind == "summary" and domain == "refund":
@@ -761,7 +799,9 @@ class Orchestrator:
         name = m["name"]
         is_ratio = self.semantic.is_ratio(mkey)
         fmt = fmt_ratio if is_ratio else (fmt_count if mkey in METRIC_ORDER else fmt_amount)
-        dim = (ir.get("dims") or ["category"])[0]
+        dims = ir.get("dims") or ["category"]
+        dim = "product" if "product" in dims else dims[0]
+        is_product = dim == "product"
         dim_label = compiler.DIM_LABEL.get(dim, dim)
         time_label = ctx["time_label"]
 
@@ -771,8 +811,12 @@ class Orchestrator:
         result["executed_sqls"] = list(ctx["sqls"])
 
         names = [r["dim"] for r in rows_now]
+        parents = [r.get("parent") for r in rows_now]
         vals = [round(r["val"] or 0, 4) for r in rows_now]
-        total = sum(v for v in vals if not is_ratio) or None
+        # 占比仅对可加和的计数/金额类指标有意义(arppu 等均值类不求占比)
+        shareable = (not is_ratio
+                     and mkey in ("gmv", "refund_amt", "item_cnt", "order_cnt", "pay_user_cnt"))
+        total = (sum(vals) or None) if shareable else None
 
         kpis = []
         if names:
@@ -782,19 +826,27 @@ class Orchestrator:
                 kpis.append({"label": f"该{dim_label}占比", "value": fmt_pct1(vals[0] / total * 100)})
         chart = bar_chart(f"{time_label}各{dim_label}{name}", names,
                           [{"name": name, "data": vals}])
-        cols = [col(dim, dim_label), col("val", name, "right")]
+        cols = [col(dim, dim_label)]
+        if is_product:
+            cols.append(col("parent", "类目"))
+        cols.append(col("val", name, "right"))
+        if total:
+            cols.append(col("share", "占比", "right"))
         rows = []
         for i, (nm, v) in enumerate(zip(names, vals)):
             row = {dim: nm, "val": fmt(v)}
+            if is_product:
+                row["parent"] = parents[i] or "—"
             if total:
                 row["share"] = fmt_pct1(v / total * 100)
-                cols = [col(dim, dim_label), col("val", name, "right"),
-                        col("share", "占比", "right")]
             rows.append(row)
 
         n = []
         if names:
-            n.append(f"{ctx['period']}{name}最高的是{names[0]}({fmt(vals[0])})"
+            top_txt = names[0]
+            if is_product and parents and parents[0]:
+                top_txt = f"{names[0]}({parents[0]})"
+            n.append(f"{ctx['period']}{name}最高的是{top_txt}({fmt(vals[0])})"
                      + (f",占整体 {vals[0] / total * 100:.1f}%。" if total else "。"))
             if total and len(names) >= 3:
                 top3 = sum(vals[:3]) / total * 100
@@ -804,15 +856,23 @@ class Orchestrator:
         else:
             n.append(f"{ctx['period']}暂无{dim_label}数据。")
         result["narrative"] = n
+        narrator_rows = []
+        for i in range(len(names)):
+            item = {dim_label: names[i], name: fmt(vals[i])}
+            if is_product:
+                item["类目"] = parents[i] or "—"
+            narrator_rows.append(item)
         result["narrator_payload"] = {"指标": name, "维度": dim_label,
                                       "时间范围": f"{ctx['start']}~{ctx['end']}",
-                                      "明细": [{dim_label: names[i], name: fmt(vals[i])} for i in range(len(names))]}
+                                      "明细": narrator_rows}
         result["raw"].update({"value": vals[0] if vals else None,
                               "metrics": [mkey],
                               "rows": [{"name": nm, "value": v} for nm, v in zip(names, vals)]})
         result["card_fn"] = lambda tid, dao, notes, atext: self._finish_card(
             "rank", tid, dao, f"{time_label}各{dim_label}{name}", kpis, chart,
-            table(cols, rows), [mkey], notes, atext, ctx)
+            table(cols, rows), [mkey], notes, atext, ctx,
+            # §16.2 聚合守卫红线:商品维只输出聚合行
+            scope_note="商品聚合视角,不含订单明细" if is_product else None)
         result["query_detail"] = f"已完成{time_label}按{dim_label}汇总(共 {len(rows_now)} 组)"
         return result
 
@@ -1062,15 +1122,6 @@ class Orchestrator:
             return ["新客客单价是多少", "最近30天GMV走势", "新客订单占比走势"]
         return ["最近30天GMV走势", "近30天退款率为什么上升"]
 
-    def _prev_label(self, preset) -> str:
-        return {
-            "last_30d": "上一个30天",
-            "last_7d": "上一个7天",
-            "yesterday": "前一天",
-            "this_month": "上个月",
-            "last_month": "再上个月",
-        }.get(preset, "上一周期")
-
     def _trend_direction(self, data: list) -> str:
         n = len(data)
         if n < 6:
@@ -1131,6 +1182,25 @@ class Orchestrator:
         ]
         c["followups"] = []
         return c
+
+    def _clarify_dims_card(self, trace_id: str) -> dict:
+        """§16.2 聚合守卫:商品维与除类目/日期外的维度组合 → 澄清卡(防笛卡尔爆炸)。"""
+        c = self._base_card("clarify", trace_id, "想确认一下拆分维度")
+        c["narrative"] = [
+            "商品维度的分析目前支持与类目、时间组合查看,暂不支持再叠加渠道、新老客等其他维度同时拆分。",
+            "您可以只按商品查看,或先按类目/渠道汇总,再对感兴趣的类目下钻到商品。",
+        ]
+        c["followups"] = ["最近30天卖得最好的10个商品", "美妆里哪些商品退款最多", "各渠道销售情况"]
+        return c
+
+    def _needs_dim_clarify(self, ir: dict, parsed: dict) -> bool:
+        """商品维组合守卫:product 与除 category/date 外的维度同现(或规则层渠道词冲突)→ 澄清。"""
+        if (parsed or {}).get("dim_conflict"):
+            return True
+        dims = (ir or {}).get("dims") or []
+        if "product" not in dims:
+            return False
+        return any(d not in ("product", "category", "date") for d in dims)
 
     def _error_card(self, trace_id: str, msg: str | None = None) -> dict:
         c = self._base_card("error", trace_id, "暂时无法回答这个问题")

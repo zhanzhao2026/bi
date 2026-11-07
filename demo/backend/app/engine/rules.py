@@ -1,15 +1,20 @@
-"""规则兜底意图解析(契约 §9,无 LLM 时必须可用)。
+"""规则兜底意图解析(契约 §9/§16,无 LLM 时必须可用)。
 
 词表全部来自 semantic/terms.yml(词是数据,经 app/semantic/loader 加载);
 意图构造逻辑(正则编译、解析顺序、分支判断)留在本模块。输出结构化 intent:
-  domain / metric / card / dim / time_preset / time_range / filters / vague 等。
-覆盖:退款(走势/归因/默认)、GMV·销售(走势/排名/渠道/默认)、客单价、支付人数、
-订单数、退款金额、支付件数、新老客对比、时间词(昨天/最近7天/最近30天/上月/本月/
-具体月份"2026年10月"、"今年11月")、类目词、渠道词。
+  domain / metric / card / dim / time_preset / time_range / time_pair /
+  filters / vague / limit / dim_conflict 等。
+
+时间解析(§16.1):统一走 app/semantic/timelex(纯函数),preset 词表仍由
+terms.yml time_words 提供,既有时间问法解析结果逐字不变;新增 旬/周/最近N天/
+今年以来/从X到Y 等表达式与「X比Y」相邻比较(time_pair)。
+
+商品下钻(§16.2):terms.yml synonyms.dimension 词 + 排名/销量句式 →
+product 维 rank 卡;与「渠道」泛指词同现 → dim_conflict(编排层出澄清卡)。
 """
-import datetime as dt
 import re
 
+from ..semantic import timelex
 from ..semantic.loader import get_semantic
 
 # ---------- 词表加载(terms.yml,导入时编译一次;缺词表即抛错,fail fast) ----------
@@ -23,15 +28,12 @@ def _req(section: str, key: str) -> str:
     return str(v)
 
 
-# ---------- 时间词(顺序敏感:具体优先;pattern 数据在 terms.yml) ----------
+# ---------- 时间词(顺序敏感:具体优先;pattern 数据在 terms.yml,timelex 按此命中) ----------
 TIME_PATTERNS: list[tuple[str, str]] = [
     (str(t["pattern"]), str(t["preset"])) for t in (_T.get("time_words") or [])
 ]
 if not TIME_PATTERNS:
     raise RuntimeError("terms.yml 缺少 time_words 词表")
-
-MONTH_FULL_RE = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月")
-MONTH_BARE_RE = re.compile(r"(?<!\d)(\d{1,2})\s*月(?!\d)")
 
 # ---------- 指标词(顺序敏感:先具体后宽泛;pattern 数据在 terms.yml) ----------
 # (pattern, metric_key, flags)
@@ -50,6 +52,13 @@ CHANNEL_WORD_RE = re.compile(_req("synonyms", "channel_word"))
 USER_TYPE_WORDS: list[str] = [str(w) for w in ((_T.get("synonyms") or {}).get("user_type") or [])]
 if not USER_TYPE_WORDS:
     raise RuntimeError("terms.yml 缺少 synonyms.user_type 词表")
+
+# ---------- 商品维度下钻词(§16.2) ----------
+PRODUCT_WORDS: list[str] = [str(w) for w in ((_T.get("synonyms") or {}).get("dimension") or [])]
+if not PRODUCT_WORDS:
+    raise RuntimeError("terms.yml 缺少 synonyms.dimension 词表")
+PRODUCT_RANK_RE = re.compile(_req("synonyms", "product_rank"))
+PRODUCT_LIMIT_RE = re.compile(_req("synonyms", "product_limit"), re.IGNORECASE)
 
 TREND_RE = re.compile(_req("intent", "trend"))
 RANK_RE = re.compile(_req("intent", "rank"))
@@ -71,30 +80,18 @@ COMPARE_METRICS = {"order_cnt", "gmv", "arppu", "pay_user_cnt", "item_cnt",
 
 
 def month_range(year: int, month: int) -> list[str]:
-    start = dt.date(year, month, 1)
-    end = dt.date(year + (month == 12), month % 12 + 1, 1) - dt.timedelta(days=1)
-    return [start.isoformat(), end.isoformat()]
+    """自然月闭区间(委托 timelex,保持既有函数可用)。"""
+    return timelex.month_range(year, month)
 
 
 def parse_time(question: str) -> str | None:
-    q = question or ""
-    for pat, preset in TIME_PATTERNS:
-        if re.search(pat, q):
-            return preset
-    return None
+    """时间词 → preset(委托 timelex;既有 preset 问法结果逐字不变)。"""
+    return timelex.parse(question, None, TIME_PATTERNS)["preset"]
 
 
 def parse_time_range(question: str, asof=None) -> list[str] | None:
-    """解析具体月份:"2026年10月" / "10月" / "今年11月" → [月初, 月末]。"""
-    q = question or ""
-    m = MONTH_FULL_RE.search(q)
-    if m and 1 <= int(m.group(2)) <= 12:
-        return month_range(int(m.group(1)), int(m.group(2)))
-    m = MONTH_BARE_RE.search(q)
-    if m and 1 <= int(m.group(1)) <= 12:
-        year = asof.year if asof is not None else 2026
-        return month_range(year, int(m.group(1)))
-    return None
+    """具体时间 → 闭区间(委托 timelex:月份/旬/从X到Y/最近N天/N周/年以来等)。"""
+    return timelex.parse(question, asof, TIME_PATTERNS)["range"]
 
 
 def parse_filters(question: str, options: dict) -> dict:
@@ -144,50 +141,100 @@ def _rank_dim(q: str, filters: dict) -> str:
     return "category"
 
 
+# ---------- 商品维度下钻(§16.2) ----------
+
+def _parse_limit(q: str) -> int | None:
+    """「前10名 / TOP10 / 10个商品」→ 条数(1~50);未命中返回 None(默认 10)。"""
+    m = PRODUCT_LIMIT_RE.search(q)
+    if not m:
+        return None
+    for g in m.groups():
+        if g:
+            return max(1, min(50, int(g)))
+    return None
+
+
+def _product_detect(q: str) -> dict:
+    """商品下钻探测:dimension 词 + (rank 词或销量句式) 才算命中。
+
+    返回 {hit, conflict, limit}:conflict=与「渠道」泛指词同现(编排层澄清)。
+    """
+    if not any(w in q for w in PRODUCT_WORDS):
+        return {"hit": False, "conflict": False, "limit": None}
+    if not (RANK_RE.search(q) or PRODUCT_RANK_RE.search(q)):
+        return {"hit": False, "conflict": False, "limit": None}
+    return {"hit": True, "conflict": bool(CHANNEL_WORD_RE.search(q)),
+            "limit": _parse_limit(q)}
+
+
 def parse(question: str, options: dict, asof=None) -> dict:
     """解析问题 → intent;未命中任何指标/筛选时返回 {"ok": False}。"""
     q = question or ""
     metric = parse_metric(q)
-    time_preset = parse_time(q)
-    time_range = None if time_preset else parse_time_range(q, asof)
+    # 时间解析统一走 timelex(§16.1):preset / range / 「X比Y」相邻比较三者互斥
+    tx = timelex.parse(q, asof, TIME_PATTERNS)
+    time_preset = tx["preset"]
+    time_range = tx["range"]
+    time_pair = tx["pair"]
     filters = parse_filters(q, options)
     m = VAGUE_METRIC_RE.search(q)
     vague_word = m.group(0) if m else None
-    time_explicit = time_preset is not None or time_range is not None
-
-    if metric is None and OVERVIEW_RE.search(q) and not COMPARE_RE.search(q):
-        # 经营概况/大盘/整体情况类:overview 卡(四 KPI 概述),时间词照常解析
-        # (新老客对比问句让位于 compare 分支)
-        return _mk("overview", "summary", q, time_preset, time_range, filters,
-                   metric=None, compare=True, vague=vague_word,
-                   time_explicit=time_explicit)
-
-    if metric is None and not any(filters.values()) and not COMPARE_RE.search(q):
-        if FOLLOWUP_RE.search(q):
-            # 追问式("较上一期变化多少"/"那...呢"):无指标词,由编排层继承上一轮指标
-            card = "trend" if TREND_RE.search(q) else "summary"
-            return _mk(None, card, q, time_preset, time_range, filters, metric=None,
-                       compare=True, vague=vague_word, time_explicit=time_explicit)
-        return {"ok": False}
-
+    time_explicit = bool(time_preset or time_range or time_pair)
+    prod = _product_detect(q)
     is_trend = bool(TREND_RE.search(q))
     is_rank = bool(RANK_RE.search(q))
     is_attr = bool(ATTRIBUTION_RE.search(q))
     is_compare_q = bool(COMPARE_RE.search(q))
     want_cmp = bool(COMPARE_REQ_RE.search(q))
 
+    if metric is None and OVERVIEW_RE.search(q) and not COMPARE_RE.search(q):
+        # 经营概况/大盘/整体情况类:overview 卡(四 KPI 概述),时间词照常解析
+        # (新老客对比问句让位于 compare 分支)
+        return _mk("overview", "summary", q, time_preset, time_range, filters,
+                   metric=None, compare=True, vague=vague_word,
+                   time_explicit=time_explicit, time_pair=time_pair)
+
+    # 商品维度下钻(§16.2):商品词 + 排名/销量句式 → product rank 卡;
+    # 与「渠道」泛指词同现 → dim_conflict(编排层出澄清卡,防笛卡尔组合)
+    if prod["hit"] and not is_trend and not is_compare_q:
+        if prod["conflict"]:
+            return _mk("product", "clarify_dims", q, time_preset, time_range, filters,
+                       metric=None, compare=False, vague=vague_word,
+                       time_explicit=time_explicit, time_pair=time_pair,
+                       dim=None, dim_conflict=True)
+        if metric == "__refund__":
+            # 商品退款排名:问「退款率」→ 退款率,其余(退款最多等)→ 退款金额
+            mkey = "refund_rate" if REFUND_TREND_RATE_RE.search(q) else "refund_amt"
+        elif metric in (None, "__vague__"):
+            mkey = "gmv"
+        else:
+            mkey = metric
+        return _mk("product", "rank", q, time_preset, time_range, filters,
+                   metric=mkey, compare=want_cmp, vague=vague_word,
+                   time_explicit=time_explicit, time_pair=time_pair,
+                   dim="product", limit=prod["limit"])
+
+    if metric is None and not any(filters.values()) and not COMPARE_RE.search(q):
+        if FOLLOWUP_RE.search(q):
+            # 追问式("较上一期变化多少"/"那...呢"):无指标词,由编排层继承上一轮指标
+            card = "trend" if TREND_RE.search(q) else "summary"
+            return _mk(None, card, q, time_preset, time_range, filters, metric=None,
+                       compare=True, vague=vague_word, time_explicit=time_explicit,
+                       time_pair=time_pair)
+        return {"ok": False}
+
     # 新老客对比 → compare 卡(新老客口径下有意义的指标都进 compare)
     if is_compare_q and (metric in (None, "__refund__") or metric in COMPARE_METRICS):
         return _mk("compare", "compare", q, time_preset, time_range, filters,
                    metric="new_order_ratio", compare=False, vague=vague_word,
-                   time_explicit=time_explicit)
+                   time_explicit=time_explicit, time_pair=time_pair)
 
     if metric == "__vague__":
         # 模糊指标词:按 GMV 理解(无时间词时已被守卫拦截为 clarify)
         card = "trend" if is_trend else ("rank" if is_rank else "summary")
         return _mk("gmv", card, q, time_preset, time_range, filters, metric="gmv",
                    compare=card == "summary" or want_cmp, vague=vague_word,
-                   time_explicit=time_explicit)
+                   time_explicit=time_explicit, time_pair=time_pair)
 
     if metric == "__refund__":
         if is_attr:
@@ -206,13 +253,13 @@ def parse(question: str, options: dict, asof=None) -> dict:
             mkey = None  # summary:退款率 + 退款金额双 KPI
         return _mk("refund", card, q, time_preset, time_range, filters, metric=mkey,
                    compare=card in ("summary", "attribution") or want_cmp,
-                   vague=vague_word, time_explicit=time_explicit)
+                   vague=vague_word, time_explicit=time_explicit, time_pair=time_pair)
 
     # 指标明确
     if metric in ("refund_rate", "refund_amt") and is_attr:
         return _mk("refund", "attribution", q, time_preset, time_range, filters,
                    metric="refund_rate", compare=True, vague=vague_word,
-                   time_explicit=time_explicit)
+                   time_explicit=time_explicit, time_pair=time_pair)
     if is_trend:
         card = "trend"
     elif is_rank and metric in ("gmv", "refund_rate", "refund_amt", "item_cnt",
@@ -225,23 +272,29 @@ def parse(question: str, options: dict, asof=None) -> dict:
         metric = "gmv"
     return _mk(metric, card, q, time_preset, time_range, filters, metric=metric,
                compare=card == "summary" or want_cmp, vague=vague_word,
-               time_explicit=time_explicit)
+               time_explicit=time_explicit, time_pair=time_pair)
 
 
 def _mk(domain, card, q, time_preset, time_range, filters, metric=None, compare=False,
-        vague=None, time_explicit=False) -> dict:
+        vague=None, time_explicit=False, time_pair=None, dim=None, limit=None,
+        dim_conflict=False) -> dict:
+    if dim is None and card == "rank":
+        dim = _rank_dim(q, filters)
     return {
         "ok": True,
         "domain": domain,
         "metric": metric,
         "card": card,
-        "dim": _rank_dim(q, filters) if card == "rank" else None,
+        "dim": dim,
         "time_preset": time_preset,
         "time_range": time_range,
+        "time_pair": time_pair,
         "time_explicit": time_explicit,
         "filters": filters,
         "filter_explicit": any(filters.values()),
         "want_compare": compare,
         "vague": vague,
+        "limit": limit,
+        "dim_conflict": dim_conflict,
         "question": q,
     }

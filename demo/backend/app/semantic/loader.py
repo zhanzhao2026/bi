@@ -72,6 +72,11 @@ class Semantic:
                                  or f"SELECT MAX({self.fact_date_col}) FROM {self.fact_table}")
         self.dims: dict = dims_doc.get("dims", {}) or {}
         self.time_presets: list = list(dims_doc.get("time_presets", []) or [])
+        # 层级维度(§16.2):children 引用必须已在 dims 中声明(fail fast)
+        for d, cfg in self.dims.items():
+            for child in ((cfg or {}).get("children") or []):
+                if child not in self.dims:
+                    raise SemanticError(f"维度 {d} 的层级子维未声明: {child}")
         self.terms: dict = terms_doc or {}
         self._validate_terms(self.terms)
 
@@ -206,6 +211,18 @@ class Semantic:
 
     def dim_keys(self) -> list:
         return list(self.dims.keys())
+
+    # ---------------- 层级维度(§16.2) ----------------
+    def dim_children(self, dim: str) -> list:
+        """维度的下层子维列表(如 category → [product])。"""
+        return list((self.dims.get(dim) or {}).get("children") or [])
+
+    def dim_parent(self, dim: str) -> str | None:
+        """维度所属的父维(如 product → category);无层级声明时返回 None。"""
+        for d, cfg in self.dims.items():
+            if dim in ((cfg or {}).get("children") or []):
+                return d
+        return None
 
     # ---------------- 术语访问(rules/guards/prompts 使用) ----------------
     def term(self, *path, default=None):

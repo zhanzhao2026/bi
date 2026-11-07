@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Query
 from ..core.db import execute, query
 from ..llm.gateway import LLMGateway
 from ..schemas import SettingsUpdate
-from ..semantic import compiler
+from ..semantic import compiler, retrieval
 from ..semantic.loader import get_data_as_of, get_filter_options, get_semantic
 from .chat import get_orchestrator
 
@@ -135,6 +135,16 @@ def versions():
     for r in rows:
         r["released"] = str(r["released"])
     return rows
+
+
+@router.get("/admin/semantic/search")
+def semantic_search(q: str = "", k: int = Query(default=5, ge=1, le=20)):
+    """语义检索测试(契约 §16.3):BM25 检索 metrics/dims/terms,供后台调试问法覆盖。"""
+    try:
+        return retrieval.get_index().search(q, k=k)
+    except Exception as e:
+        logger.warning("semantic search failed: %s", e)
+        raise HTTPException(status_code=500, detail=f"语义检索失败: {e}")
 
 
 # ================= 审计日志 =================

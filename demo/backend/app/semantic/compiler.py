@@ -2,7 +2,8 @@
 
 - 基础模板 FROM {事实表} {别名},时间列取自 models.yml(default_table/alias/date_col),
   不再硬编码表名 fact_order
-- category/channel 维 JOIN 维表取中文名;date 维格式化 MM-DD
+- category/channel/product 维 JOIN 维表取中文名(product 自动带父类目名列,§16.2);
+  date 维格式化 MM-DD
 - 行级权限谓词(§12)以 AND 注入 WHERE
 - 比率指标分母 NULLIF 防除零(来自语义层指标定义,派生指标已由 loader 依赖图展开)
 """
@@ -64,6 +65,30 @@ def prev_range(start: str, end: str) -> tuple[str, str]:
     return (s - dt.timedelta(days=shift)).isoformat(), (e - dt.timedelta(days=shift)).isoformat()
 
 
+def resolve_compare(ir: dict, start: str, end: str) -> tuple[str, str] | None:
+    """IR compare → 对比窗口 (start, end) 或 None。
+
+    - "prev_period":主窗口等长向前平移(既有行为);
+    - {"type": "range", "range": [d1, d2]}:显式对比窗口(§16.1 相邻比较,
+      由 timelex 的「X比Y」解析产出,可带 label 供叙事);
+    - 其余("none" 等)返回 None。
+    """
+    c = ir.get("compare")
+    if c == "prev_period":
+        return prev_range(start, end)
+    if isinstance(c, dict):
+        if c.get("type") != "range":
+            raise CompileError("compare.type 仅支持 range")
+        rng = c.get("range")
+        if not isinstance(rng, (list, tuple)) or len(rng) != 2:
+            raise CompileError("compare.range 应为 [起,止] 两个日期")
+        s, e = _as_date(rng[0]), _as_date(rng[1])
+        if s > e:
+            raise CompileError("compare.range 起止颠倒")
+        return s.isoformat(), e.isoformat()
+    return None
+
+
 def preset_label(preset: str) -> str:
     return {
         "yesterday": "昨天",
@@ -75,14 +100,21 @@ def preset_label(preset: str) -> str:
 
 
 def time_label(ir_time: dict | None) -> str:
-    """IR time 的人话标签:preset → 固定词;range → 整月"2026年10月"或"起~止"。"""
+    """IR time 的人话标签:preset → 固定词;range → 整月/旬"2026年10月(下旬)"或"起~止"。"""
     if isinstance(ir_time, dict) and ir_time.get("range"):
         rng = ir_time["range"]
         try:
             s, e = _as_date(rng[0]), _as_date(rng[1])
             nxt = (e.replace(day=28) + dt.timedelta(days=4)).replace(day=1)
             last_day = (nxt - dt.timedelta(days=1)).day
-            if s.day == 1 and s.year == e.year and s.month == e.month and e.day == last_day:
+            same_month = s.year == e.year and s.month == e.month
+            if same_month and s.day == 1 and e.day == 10:
+                return f"{s.year}年{s.month}月上旬"
+            if same_month and s.day == 11 and e.day == 20:
+                return f"{s.year}年{s.month}月中旬"
+            if same_month and s.day == 21 and e.day == last_day:
+                return f"{s.year}年{s.month}月下旬"
+            if s.day == 1 and same_month and e.day == last_day:
                 return f"{s.year}年{s.month}月"
             return f"{s.isoformat()}~{e.isoformat()}"
         except Exception:
@@ -122,8 +154,10 @@ def validate_ir(ir: dict, semantic: Semantic, options: dict) -> tuple[bool, str]
     if not t.get("range") and t.get("preset") not in semantic.time_presets:
         return False, f"未知时间口径: {t.get('preset')}"
     dims = ir.get("dims") or []
-    if len(dims) > 1:
-        return False, "v1 暂不支持多维度同时拆分"
+    # 商品维(§16.2)允许 ["product"] 或 ["category","product"](父类目名列自动带上);
+    # 其余多维度组合仍不支持。
+    if len(dims) > 1 and set(dims) != {"category", "product"}:
+        return False, "v1 暂不支持多维度同时拆分(商品维仅可与类目组合)"
     for d in dims:
         if d not in semantic.dims:
             return False, f"未知维度: {d}"
@@ -138,8 +172,22 @@ def validate_ir(ir: dict, semantic: Semantic, options: dict) -> tuple[bool, str]
                 return False, f"未知的{k}筛选值: {v}"
     if ir.get("granularity") not in (None, "day", "none"):
         return False, f"未知粒度: {ir.get('granularity')}"
-    if ir.get("compare") not in ("none", "prev_period"):
-        return False, f"未知对比方式: {ir.get('compare')}"
+    cmp = ir.get("compare")
+    if isinstance(cmp, dict):
+        # 显式对比窗口(§16.1 相邻比较)
+        if cmp.get("type") != "range":
+            return False, "未知对比方式: compare.type 应为 range"
+        rng = cmp.get("range")
+        if not isinstance(rng, (list, tuple)) or len(rng) != 2:
+            return False, "compare.range 应为 [起,止] 两个日期"
+        try:
+            cs, ce = _as_date(rng[0]), _as_date(rng[1])
+        except CompileError as exc:
+            return False, f"compare.range 日期不合法: {exc}"
+        if cs > ce:
+            return False, "compare.range 起止颠倒"
+    elif cmp not in ("none", "prev_period"):
+        return False, f"未知对比方式: {cmp}"
     try:
         limit = int(ir.get("limit", 10))
         if not 1 <= limit <= 50:
@@ -183,20 +231,26 @@ DIM_JOIN = {
     "channel": "JOIN dim_channel ch ON ch.channel_id = {f}.channel_id",
     "date": "",
     "user_type": "",
+    # 商品维(§16.2):JOIN dim_product,并自动带父类目名列(pc)
+    "product": ("JOIN dim_product p ON p.product_id = {f}.product_id "
+                "LEFT JOIN dim_category pc ON pc.category_id = p.category_id"),
 }
 DIM_SELECT = {
     "category": "c.category_name",
     "channel": "ch.channel_name",
     "date": "DATE_FORMAT({f}.{d}, '%%m-%%d')",
     "user_type": "{f}.user_type",
+    "product": "p.product_name",
 }
 DIM_GROUP = {
     "category": "c.category_name",
     "channel": "ch.channel_name",
     "date": "{f}.{d}",
     "user_type": "{f}.user_type",
+    "product": "p.product_id, p.product_name, pc.category_name",
 }
-DIM_LABEL = {"category": "类目", "channel": "渠道", "date": "日期", "user_type": "用户类型"}
+DIM_LABEL = {"category": "类目", "channel": "渠道", "date": "日期",
+             "user_type": "用户类型", "product": "商品"}
 
 
 def compile_metric_query(ir: dict, semantic: Semantic, start: str, end: str,
@@ -210,12 +264,17 @@ def compile_metric_query(ir: dict, semantic: Semantic, start: str, end: str,
     f = semantic.fact_alias              # 来自 models.yml(tables.<table>.alias)
     d = semantic.fact_date_col           # 来自 models.yml(tables.<table>.date_col)
     dims = ir.get("dims") or []
-    dim = dims[0] if dims else None
+    # ["product"] / ["category","product"] → 商品维(父类目名列自动带上,§16.2)
+    dim = "product" if "product" in dims else (dims[0] if dims else None)
     params: list = []
     where = build_where(params, semantic, start, end, ir.get("filters"), permission)
 
     if dim:
-        select_dim = f"{DIM_SELECT[dim].format(f=f, d=d)} AS dim_name"
+        if dim == "product":
+            select_dim = (f"{DIM_SELECT[dim].format(f=f, d=d)} AS dim_name, "
+                          f"pc.category_name AS dim_parent")
+        else:
+            select_dim = f"{DIM_SELECT[dim].format(f=f, d=d)} AS dim_name"
         join = DIM_JOIN[dim].format(f=f)
         if dim == "date":
             # date 维直接 GROUP BY 事实表日期列,升序输出

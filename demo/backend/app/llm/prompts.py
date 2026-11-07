@@ -17,14 +17,28 @@ _IR_SCHEMA_TMPL = (
 )
 
 
-def render_planner_system(sem: "Semantic", options: dict | None = None) -> str:
-    """planner system prompt:语义层指标/维度/筛值/术语 + IR Schema 约束。"""
+def render_planner_system(sem: "Semantic", options: dict | None = None,
+                          metric_keys: list[str] | None = None) -> str:
+    """planner system prompt:语义层指标/维度/筛值/术语 + IR Schema 约束。
+
+    metric_keys(契约 §16.3):按用户问题检索出的指标 key 子集(BM25 top-k 注入);
+    None/空 = 全量注入(指标总数 ≤ 12 或检索为空时由 gateway 回退,行为不变)。
+    dims/筛值/术语始终全量。
+    """
     options = options or {}
     lines: list[str] = []
     lines.append("你是电商 BI 系统的语义解析器,把用户的中文数据问题转换为查询 IR(中间表示)JSON。")
     lines.append("")
-    lines.append("可用指标(格式: key(名称, 单位[, 比率]) — 口径说明):")
-    for k, m in sem.metrics.items():
+    metric_items = list(sem.metrics.items())
+    header = "可用指标(格式: key(名称, 单位[, 比率]) — 口径说明):"
+    if metric_keys:
+        selected = [k for k in metric_keys if k in sem.metrics]
+        if selected and len(selected) < len(metric_items):
+            metric_items = [(k, sem.metrics[k]) for k in selected]
+            header = (f"可用指标(按问题检索出最相关的 {len(metric_items)}/{len(sem.metrics)} 个,"
+                      "格式: key(名称, 单位[, 比率]) — 口径说明):")
+    lines.append(header)
+    for k, m in metric_items:
         ratio = ", 比率" if m.get("ratio") else ""
         lines.append(f"- {k}({m.get('name', '')}, {m.get('unit', '')}{ratio}): {m.get('plain', '')}")
     lines.append("")
