@@ -375,8 +375,16 @@ backend/semantic/
   逐位对拍/可加恒等式/美妆 scoped 对拍/新卡 E2E×5)
 
 ### 17.6 验收
-- run_tests.sh 全 PASS;eval 26/26(规则模式当场验证;LLM 模式待 token 后复核)
-- 场景矩阵:⑨⑩⑪ 全过 + 既有 52 场景不回归(LLM 模式归档报告)
+- run_tests.sh **302/302** 全 PASS;eval **26/26**(规则与 LLM 双模式各验证一次)
+- 场景矩阵 **63/63 = 100%**(LLM 模式,glm-4-flash;⑦不可表达 5/5 诚实拒答),
+  归档 `demo/docs/scenario-matrix-report.json`
+- LLM 模式加固(LLM 实测暴露的缺陷,均已修并以测试锁定):
+  - `validate_ir` 补 time.range 起止颠倒/非法日期校验(LLM 坏 IR 落回规则路径,
+    而非到编译期抛异常);`_as_date` 包装 ValueError 为 CompileError
+  - 分析意图规则所有:why 问法的指标、attribution/M4 的基期窗口(compare)、
+    「X比Y」pair 的对比区间均以规则解析为准,LLM IR 仅贡献时间主窗与筛选
+  - planner few-shot 加固:最近N天数天数 / 无拆分词不加 dims(§16.3 检索注入
+    契约不变,few-shot 仅用 gmv/arppu/refund_rate)
 - 语义版本登记 v15(terms.yml intent.why/delta_rank;semantic_version 快照)
 - 不做(数据诚实边界):M6 漏斗、M8 广告相关性(库中无流量/广告数据,fact_traffic 仅占位);
   趋势日级异常点检测(种子故事无日级拐点)

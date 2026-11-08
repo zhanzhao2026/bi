@@ -278,6 +278,28 @@ class TestCompilerTimeGlue(unittest.TestCase):
         ok, err = compiler.validate_ir(bad, sem, get_filter_options())
         self.assertFalse(ok, "compare.range 起止颠倒应拒绝")
 
+    def test_validate_ir_rejects_bad_time_range(self):
+        """LLM 防线:time.range 起止颠倒/非法日期/长度不对 → 拒绝(回退规则 IR),
+        而不是到 resolve_time/编译期才抛异常(v15 eval LLM 模式实测暴露)。"""
+        from app.semantic import compiler
+        from app.semantic.loader import get_filter_options, get_semantic
+        sem = get_semantic()
+
+        def check(time_spec):
+            ir = compiler.normalize_ir({"metric": "gmv", "time": time_spec})
+            ok, err = compiler.validate_ir(ir, sem, get_filter_options())
+            self.assertFalse(ok, f"{time_spec} 应被拒绝")
+            return err
+
+        self.assertIn("起止颠倒", check({"range": ["2026-11-06", "2026-10-08"]}))
+        self.assertIn("日期不合法", check({"range": ["2026-13-01", "2026-12-31"]}))
+        self.assertIn("应为 [起,止]", check({"range": ["2026-10-01"]}))
+        # 合法 range 不受影响
+        ir = compiler.normalize_ir({"metric": "gmv",
+                                    "time": {"range": ["2026-10-08", "2026-11-06"]}})
+        ok, err = compiler.validate_ir(ir, sem, get_filter_options())
+        self.assertTrue(ok, f"正常 range 应通过: {err}")
+
 
 if __name__ == "__main__":
     unittest.main()

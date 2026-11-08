@@ -197,6 +197,9 @@ class TestAnalysisCardsE2E(unittest.TestCase):
     def setUpClass(cls):
         from app.engine.orchestrator import Orchestrator
         cls.orch = Orchestrator()
+        # 本类断言的是规则语义(LLM 模式的端到端行为由场景矩阵守门);
+        # 禁用网关保证测试确定性,不随 sys_settings 是否配置 token 波动。
+        cls.orch.gateway.enabled = lambda: False
         cls.l0, cls.l1, cls.p0, cls.p1 = _windows()
 
     def test_refund_amt_attribution_card(self):

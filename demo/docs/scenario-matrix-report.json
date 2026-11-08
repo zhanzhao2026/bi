@@ -1,10 +1,10 @@
 {
- "ran_at": "2026-11-07 20:59:26",
+ "ran_at": "2026-11-08 13:43:38",
  "base": "http://127.0.0.1:8310",
  "asof": "2026-11-06",
  "summary": {
-  "total": 52,
-  "passed": 52,
+  "total": 63,
+  "passed": 63,
   "pass_rate": 100.0,
   "groups": {
    "①时间": {
@@ -36,6 +36,18 @@
     "passed": 5
    },
    "⑧多轮继承": {
+    "total": 2,
+    "passed": 2
+   },
+   "⑨归因": {
+    "total": 5,
+    "passed": 5
+   },
+   "⑩变化排名": {
+    "total": 4,
+    "passed": 4
+   },
+   "⑪分析追问": {
     "total": 2,
     "passed": 2
    }
@@ -475,7 +487,14 @@
      "range": [
       "2026-10-21",
       "2026-10-31"
-     ]
+     ],
+     "compare": {
+      "type": "range",
+      "range": [
+       "2026-10-01",
+       "2026-10-20"
+      ]
+     }
     },
     "dims": [],
     "filters": {
@@ -489,7 +508,8 @@
      "range": [
       "2026-10-01",
       "2026-10-10"
-     ]
+     ],
+     "label": "上旬"
     },
     "order": "desc",
     "limit": 10
@@ -1157,9 +1177,7 @@
     "filters": {
      "category": [],
      "channel": [],
-     "user_type": [
-      "新客"
-     ]
+     "user_type": []
     },
     "granularity": "none",
     "compare": "none",
@@ -2115,6 +2133,465 @@
     },
     "granularity": "none",
     "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [
+    "summary"
+   ],
+   "done_status": "ok"
+  },
+  {
+   "id": "A01",
+   "group": "⑨归因",
+   "q": "最近30天退款率为什么上升?",
+   "expect": {
+    "card": "attribution",
+    "metric": "refund_rate",
+    "time": {
+     "preset": "last_30d"
+    }
+   },
+   "rule": "规则=退款域归因(golden #17 同型,既有能力)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "attribution",
+   "ir": {
+    "metric": "refund_rate",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "prev_period",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "A02",
+   "group": "⑨归因",
+   "q": "最近30天退款金额为什么上升?",
+   "expect": {
+    "card": "attribution",
+    "metric": "refund_amt",
+    "time": {
+     "preset": "last_30d"
+    }
+   },
+   "rule": "规则=v15 可加归因(元瀑布;此前被强制退款率)",
+   "pre": [],
+   "note": "golden #22 同型",
+   "pass": true,
+   "card_type": "attribution",
+   "ir": {
+    "metric": "refund_amt",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [
+     "date"
+    ],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "day",
+    "compare": "prev_period",
+    "order": "asc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "A03",
+   "group": "⑨归因",
+   "q": "最近30天新客占比为什么变化?",
+   "expect": {
+    "card": "attribution",
+    "metric": "new_order_ratio",
+    "time": {
+     "preset": "last_30d"
+    },
+    "filters_empty": [
+     "user_type"
+    ]
+   },
+   "rule": "规则=v15 比率归因泛化;「新客」词不落筛选(占比口径剥离)",
+   "pre": [],
+   "note": "filters.user_type 必须为空(否则指标恒 100%)",
+   "pass": true,
+   "card_type": "attribution",
+   "ir": {
+    "metric": "new_order_ratio",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "day",
+    "compare": "prev_period",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "A04",
+   "group": "⑨归因",
+   "q": "最近30天订单退款率为什么上升?",
+   "expect": {
+    "card": "attribution",
+    "metric": "refund_order_rate",
+    "time": {
+     "preset": "last_30d"
+    }
+   },
+   "rule": "规则=v15 比率归因泛化(分母订单数,行级可加)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "attribution",
+   "ir": {
+    "metric": "refund_order_rate",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "prev_period",
+    "limit": 10,
+    "order": "desc"
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "A05",
+   "group": "⑨归因",
+   "q": "美妆最近30天退款率为什么上升?",
+   "expect": {
+    "card": "attribution",
+    "metric": "refund_rate",
+    "time": {
+     "preset": "last_30d"
+    },
+    "filters": {
+     "category": [
+      "美妆"
+     ]
+    }
+   },
+   "rule": "规则=scoped 归因(golden #18 同型)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "attribution",
+   "ir": {
+    "metric": "refund_rate",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [
+     "category"
+    ],
+    "filters": {
+     "category": [
+      "美妆"
+     ],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "prev_period",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "D01",
+   "group": "⑩变化排名",
+   "q": "最近30天哪些类目GMV下降最明显?",
+   "expect": {
+    "card": "rank",
+    "metric": "gmv",
+    "dims": [
+     "category"
+    ],
+    "compare": "prev_period"
+   },
+   "rule": "规则=v15 M4(两期变化额排序+贡献占比;此前为当期排名,语义漂移)",
+   "pre": [],
+   "note": "golden #25 同型",
+   "pass": true,
+   "card_type": "rank",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [
+     "category"
+    ],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "prev_period",
+    "order": "asc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "D02",
+   "group": "⑩变化排名",
+   "q": "最近30天哪些渠道GMV上升最多?",
+   "expect": {
+    "card": "rank",
+    "metric": "gmv",
+    "dims": [
+     "channel"
+    ],
+    "compare": "prev_period"
+   },
+   "rule": "规则=v15 M4 方向=up",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "rank",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [
+     "channel"
+    ],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "prev_period",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "D03",
+   "group": "⑩变化排名",
+   "q": "最近30天哪些类目退款金额下滑最明显?",
+   "expect": {
+    "card": "rank",
+    "metric": "refund_amt",
+    "dims": [
+     "category"
+    ],
+    "compare": "prev_period"
+   },
+   "rule": "规则=v15 M4(可加指标,贡献占比)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "rank",
+   "ir": {
+    "metric": "refund_amt",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [
+     "category"
+    ],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "day",
+    "compare": "prev_period",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "D04",
+   "group": "⑩变化排名",
+   "q": "最近30天哪些类目退款率变化最大?",
+   "expect": {
+    "card": "rank",
+    "metric": "refund_rate",
+    "dims": [
+     "category"
+    ],
+    "compare": "prev_period"
+   },
+   "rule": "规则=v15 M4(比率指标,pp 变化,无贡献占比列)",
+   "pre": [],
+   "note": "",
+   "pass": true,
+   "card_type": "rank",
+   "ir": {
+    "metric": "refund_rate",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [
+     "category"
+    ],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "prev_period",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "W01",
+   "group": "⑪分析追问",
+   "q": "那为什么变化了呢?",
+   "expect": {
+    "card": "attribution",
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    },
+    "filters": {
+     "category": [
+      "美妆"
+     ]
+    }
+   },
+   "rule": "规则=why 追问继承升级 M5(继承上一轮指标+美妆筛选;LLM clarify 被守卫忽略)",
+   "pre": [
+    "最近30天美妆的GMV是多少?"
+   ],
+   "note": "同 session:先问汇总,再以「为什么」追问 → 可加归因(GMV,元瀑布)",
+   "pass": true,
+   "card_type": "attribution",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [
+      "美妆"
+     ],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "day",
+    "compare": "prev_period",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [
+    "summary"
+   ],
+   "done_status": "ok"
+  },
+  {
+   "id": "W02",
+   "group": "⑪分析追问",
+   "q": "那为什么上升呢?",
+   "expect": {
+    "card": "attribution",
+    "metric": "refund_rate",
+    "time": {
+     "preset": "last_30d"
+    }
+   },
+   "rule": "规则=why 追问继承升级 M5(继承退款率)",
+   "pre": [
+    "最近30天退款率是多少?"
+   ],
+   "note": "同 session:先问退款率,再追问为什么上升 → 退款率归因(pp 瀑布)",
+   "pass": true,
+   "card_type": "attribution",
+   "ir": {
+    "metric": "refund_rate",
+    "time": {
+     "preset": "last_30d"
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "prev_period",
     "order": "desc",
     "limit": 10
    },

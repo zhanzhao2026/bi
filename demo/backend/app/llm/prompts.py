@@ -159,6 +159,23 @@ def _few_shots(asof: dt.date) -> list[tuple[str, str, str]]:
          ' "granularity": "none", "compare": "none", "order": "desc", "limit": 10}',
          f"「本周」= 本周一({monday})~数据截至日({asof.isoformat()}),"
          "必须用 range 表达,不许降级成 last_7d(那是最近7天,不是本周)"),
+        # n. 最近N天:从数据截至日往前数 N 天(含截至日),天数一个都不能少
+        ("最近3天GMV是多少?",
+         f'{{"metric": "gmv", "time": {{"range": '
+         f'["{(asof - dt.timedelta(days=2)).isoformat()}", "{asof.isoformat()}"]}}, "dims": [],'
+         ' "filters": {"category": [], "channel": [], "user_type": []},'
+         ' "granularity": "none", "compare": "none", "order": "desc", "limit": 10}',
+         f"「最近3天」= 含数据截至日({asof.isoformat()})在内的 3 天,起点为 "
+         f"{(asof - dt.timedelta(days=2)).isoformat()};N 天的起点=截至日-(N-1),"
+         "数错天数会直接改变答案数字(任意指标同理)"),
+        # o. 无拆分词的问数:dims 留空,不要自作主张加维度
+        ("美妆最近30天的客单价是多少?",
+         '{"metric": "arppu", "time": {"preset": "last_30d"}, "dims": [],'
+         ' "filters": {"category": ["美妆"], "channel": [], "user_type": []},'
+         ' "granularity": "none", "compare": "none", "order": "desc", "limit": 10}',
+         "问「是多少/有多少」且无排名/走势词 → 汇总问数,dims 留空;"
+         "「美妆」是筛选进 filters.category;擅自加 dims 会把问数变成排名,"
+         "答案形态就错了(任意指标同理)"),
     ]
 
 

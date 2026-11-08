@@ -295,6 +295,23 @@ class Orchestrator:
                      session_id, user, question, notes, assume_text,
                      timings, t0, llm_used, llm_model):
         sem = self.semantic
+        # 分析意图以规则为准(LLM IR 仅贡献时间/筛选,与 card_kind 优先级同理):
+        # ① why 问法的指标取 rules 解析结果(防 LLM 换指标,如新客占比→支付人数);
+        # ② M4 变化排名缺对比窗口时补 prev_period(防 LLM 丢 compare;显式 range 不动)
+        if parsed.get("ok"):
+            if (parsed.get("card") == "attribution"
+                    and parsed.get("metric") in attribution.ATTR_KEYS):
+                ir["metric"] = parsed["metric"]
+            pair = parsed.get("time_pair")
+            if pair:
+                # 「X比Y」对比窗口由规则 timelex 确定性解析(§16.1),任何卡型下
+                # 都以规则为准,LLM IR 不得丢失或改写对比区间
+                ir["compare"] = {"type": "range", "range": list(pair["compare"]),
+                                 "label": str(pair.get("compare_label") or "")}
+            elif parsed.get("card") == "attribution" or parsed.get("delta_dir"):
+                # 两期分析的基期窗口归规则所有:无显式对比词时一律 prev_period
+                # (防 LLM 自选对比窗口改变归因/排名结论)
+                ir["compare"] = "prev_period"
         # 口径守卫:新客占比本身按新老客口径统计——「新客占比」会被 parse_filters
         # 误挂 user_type=新客(指标恒为 100%),LLM IR 同样在此拦下并注明。
         if ir.get("metric") == "new_order_ratio" and (ir.get("filters") or {}).get("user_type"):
@@ -313,15 +330,16 @@ class Orchestrator:
         # §17:LLM 模式下,规则判为汇总但 LLM IR 显式给出拆分维度时以 IR 为准
         # (修复「哪个类目最高/前N」被降级成整体汇总的语义漂移;规则模式不受影响,
         #  compare/attribution/overview 等规则意图仍以规则为准 —— IR 无法表达这些卡)
-        if source == "llm" and card_kind == "summary" and (ir.get("dims") or []):
-            card_kind = self._card_kind_from_ir(ir)
         # doc 04 §5:「为什么」追问继承主题升级 M5 归因 —— 显式指标问法已在规则层
         # 直判,这里只兜「那为什么…呢」这类无指标追问(继承上一轮指标后升级)。
+        # 升级优先于 LLM dims 重推:追问的意图是归因,LLM 自加的 date 维不改变意图。
         if (parsed.get("ok") and parsed.get("why_attr") and card_kind == "summary"
-                and not (ir.get("dims") or []) and not parsed.get("vague")
+                and not parsed.get("vague")
                 and (parsed.get("domain") or "") not in ("overview", "refund", "compare")
                 and ir.get("metric") in attribution.ATTR_KEYS):
             card_kind = "attribution"
+        elif source == "llm" and card_kind == "summary" and (ir.get("dims") or []):
+            card_kind = self._card_kind_from_ir(ir)
         dim_label = {"category": "类目", "channel": "渠道", "product": "商品"}.get(
             (parsed or {}).get("dim") or "", "类目")
 

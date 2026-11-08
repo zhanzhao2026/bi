@@ -26,7 +26,10 @@ def _as_date(s) -> dt.date:
         return s
     if not DATE_RE.match(str(s)):
         raise CompileError(f"日期格式不合法: {s}(应为 YYYY-MM-DD)")
-    return dt.date.fromisoformat(str(s))
+    try:
+        return dt.date.fromisoformat(str(s))
+    except ValueError as exc:
+        raise CompileError(f"日期不合法: {s}({exc})") from exc
 
 
 def resolve_time(ir_time: dict, data_as_of: str) -> tuple[str, str]:
@@ -153,6 +156,18 @@ def validate_ir(ir: dict, semantic: Semantic, options: dict) -> tuple[bool, str]
         return False, "缺少时间条件"
     if not t.get("range") and t.get("preset") not in semantic.time_presets:
         return False, f"未知时间口径: {t.get('preset')}"
+    if t.get("range"):
+        # LLM 可能输出起止颠倒/非法日期的 range(规则路径 timelex 保证有序,
+        # 这里把守同一防线):拒绝后由编排层回退规则 IR,而不是到编译期才炸
+        rng = t["range"]
+        if not isinstance(rng, (list, tuple)) or len(rng) != 2:
+            return False, "time.range 应为 [起,止] 两个日期"
+        try:
+            ts, te = _as_date(rng[0]), _as_date(rng[1])
+        except CompileError as exc:
+            return False, f"time.range 日期不合法: {exc}"
+        if ts > te:
+            return False, "time.range 起止颠倒"
     dims = ir.get("dims") or []
     # 商品维(§16.2)允许 ["product"] 或 ["category","product"](父类目名列自动带上);
     # 其余多维度组合仍不支持。
