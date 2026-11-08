@@ -11,6 +11,9 @@ default_table: fact_order
 # 数据水位查询(health/quickview 的 data_as_of)
 data_as_of_query: SELECT MAX(pay_date) FROM fact_order
 
+# 数据起始查询(§17 覆盖窗口防线:时间窗口起点早于该日 → 截断并注明/整体越界拒答)
+data_start_query: SELECT MIN(pay_date) FROM fact_order
+
 tables:
   fact_order:
     alias: f

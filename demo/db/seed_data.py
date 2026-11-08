@@ -428,6 +428,7 @@ def main():
         (14, "2026-11-07", "数据小组", "新增商品维度下钻词与时间表达式层(旬/周/相邻比较),支持类目→商品层级分析"),
         (15, "2026-11-08", "数据小组", "分析类场景扩容:归因支持退款金额/新客占比/订单退款率/GMV 等指标与两期变化贡献排名;词表新增 why/delta_rank 分析意图"),
         (16, "2026-11-08", "数据小组", "时间表达式层增强:裸 ISO 日期(2026-11-05)与「M月D日」单日解析、「A对比B」双时间表达式对比;对比窗口由 timelex 确定性接管"),
+        (17, "2026-11-08", "数据小组", "覆盖窗口防线:models 新增 data_start_query(数据起始日);时间窗口起止两侧对称防越界——整体越界确定性拒答并引用真实覆盖窗口,部分越界截断并如实注明;meta 逃生口覆盖能力/数据范围询问"),
     ]
     snapshots = {
         10: "# semantic metrics snapshot(占位快照)\nversion: 10\nmetrics:\n  gmv: {agg: 'SUM(f.pay_amount)'}\n  order_cnt: {agg: 'COUNT(DISTINCT f.order_id)'}\n  refund_amt: {agg: 'SUM(f.refund_amount)'}\n",
@@ -437,6 +438,7 @@ def main():
         14: "# terms snapshot(占位快照)\nversion: 14\nnotes: 商品维度下钻词(§16.2)+ timelex 时间表达式层\nintent:\n  trend: '走势|趋势|按天|每天|每日'\n",
         15: "# terms snapshot(占位快照)\nversion: 15\nnotes: 分析意图词 why/delta_rank;归因泛化(比率+可加指标)与 M4 变化贡献排名\nintent:\n  why: '为什么|什么原因|原因|归因|驱动|怎么回事'\n  delta_rank: '下降最明显|上升最多|变化最大|贡献最大'\n",
         16: "# timelex snapshot(占位快照)\nversion: 16\nnotes: 裸 ISO 日期与「M月D日」单日解析;「A对比B」双时间表达式对比(timelex 确定性接管两期窗口)\nexpr:\n  iso_date: '2026-11-05'\n  pair: 'A对比B'\n",
+        17: "# models snapshot(占位快照)\nversion: 17\nnotes: 覆盖窗口防线 — 新增 data_start_query=SELECT MIN(pay_date) FROM fact_order;水位防线扩展为覆盖窗口 [MIN, MAX] 起止两侧对称(整体越界拒答/部分越界截断注明)\n",
     }
     insert_batches(cur, "INSERT INTO semantic_version (version, released, author, change_desc, yaml_snapshot) VALUES (%s,%s,%s,%s,%s)",
                    [(v, r, a, d, snapshots[v]) for v, r, a, d in versions])

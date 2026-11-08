@@ -316,5 +316,97 @@ class TestCompilerTimeGlue(unittest.TestCase):
         self.assertTrue(ok, f"正常 range 应通过: {err}")
 
 
+class TestCoverageGuard(unittest.TestCase):
+    """§17 覆盖窗口防线(v17):窗口起止两侧对称——整体越界 → 确定性拒答
+    (理由引用真实覆盖窗口,不假手 LLM 措辞),部分越界 → 截断+注明(数字不变);
+    compare 显式窗口同理(整体越界丢弃/部分越界截断)。"""
+
+    def _g(self, ir, asof=ASOF, start="2026-08-08"):
+        from app.engine.orchestrator import Orchestrator
+        return Orchestrator._guard_time_window(ir, asof, start)
+
+    def test_future_entire_after_refuses(self):
+        """v16 行为回归锁:整个窗口晚于水位 → 拒答,理由含水位事实。"""
+        ir = {"metric": "gmv", "time": {"range": ["2026-11-10", "2026-11-15"]}}
+        ok, _ir2, reason, notes = self._g(ir)
+        self.assertFalse(ok)
+        self.assertIn("数据还没有发生", reason or "")
+        self.assertIn("2026-11-06", reason or "")
+        self.assertEqual([], notes)
+
+    def test_past_entire_before_refuses(self):
+        """新增:整个窗口早于数据起始 → 拒答,理由引用真实覆盖窗口
+        (此前 LLM 自己写原因,误表述为「超出数据截至日」)。"""
+        ir = {"metric": "gmv", "time": {"range": ["2025-01-01", "2025-12-31"]}}
+        ok, _ir2, reason, notes = self._g(ir)
+        self.assertFalse(ok)
+        self.assertIn("数据仅覆盖 2026-08-08~2026-11-06", reason or "")
+        self.assertIn("早于数据起始日", reason or "")
+        self.assertEqual([], notes)
+
+    def test_ytd_partial_past_clipped_with_note(self):
+        """「今年以来」(2026-01-01 起)→ 截断到数据起始 2026-08-08 + 注明,
+        不再无声拿 90 天数据冒充全年口径。"""
+        ir = {"metric": "gmv", "time": {"range": ["2026-01-01", "2026-11-06"]}}
+        ok, ir2, reason, notes = self._g(ir)
+        self.assertTrue(ok, reason)
+        self.assertEqual(["2026-08-08", "2026-11-06"], ir2["time"]["range"])
+        self.assertEqual(1, len(notes))
+        self.assertIn("已按 2026-08-08~2026-11-06 统计", notes[0])
+
+    def test_partial_future_clipped_with_note(self):
+        ir = {"metric": "gmv", "time": {"range": ["2026-11-01", "2026-11-11"]}}
+        ok, ir2, _reason, notes = self._g(ir)
+        self.assertTrue(ok)
+        self.assertEqual(["2026-11-01", "2026-11-06"], ir2["time"]["range"])
+        self.assertIn("已按 2026-11-01~2026-11-06 统计", notes[0])
+
+    def test_both_sides_clipped(self):
+        ir = {"metric": "gmv", "time": {"range": ["2025-01-01", "2027-01-01"]}}
+        ok, ir2, _reason, notes = self._g(ir)
+        self.assertTrue(ok)
+        self.assertEqual(["2026-08-08", "2026-11-06"], ir2["time"]["range"])
+        self.assertEqual(1, len(notes))
+
+    def test_compare_entire_before_dropped_with_note(self):
+        ir = {"metric": "gmv", "time": {"preset": "last_30d"},
+              "compare": {"type": "range", "range": ["2025-11-01", "2025-12-01"],
+                          "label": "去年同期"}}
+        ok, ir2, _reason, notes = self._g(ir)
+        self.assertTrue(ok)
+        self.assertEqual("none", ir2["compare"])
+        self.assertEqual(1, len(notes))
+        self.assertIn("省略对比", notes[0])
+
+    def test_compare_partial_clipped_with_note(self):
+        ir = {"metric": "gmv", "time": {"preset": "last_30d"},
+              "compare": {"type": "range", "range": ["2026-07-01", "2026-09-01"]}}
+        ok, ir2, _reason, notes = self._g(ir)
+        self.assertTrue(ok)
+        self.assertEqual(["2026-08-08", "2026-09-01"], ir2["compare"]["range"])
+        self.assertIn("对比窗口已按 2026-08-08~2026-09-01 截断统计", notes[0])
+
+    def test_preset_and_in_window_untouched(self):
+        """preset 窗口与覆盖窗口内的显式 range 零变化、零 note(既有行为锁)。"""
+        for t in ({"preset": "last_30d"}, {"range": ["2026-09-01", "2026-10-01"]}):
+            ir = {"metric": "gmv", "time": dict(t)}
+            ok, ir2, _reason, notes = self._g(ir)
+            self.assertTrue(ok)
+            self.assertEqual(ir["time"], ir2["time"])
+            self.assertEqual([], notes)
+
+    def test_no_data_start_skips_past_side(self):
+        """data_start 不可用(DB 异常回退)→ 起始侧检查跳过,未来侧照常。"""
+        ir = {"metric": "gmv", "time": {"range": ["2025-01-01", "2025-12-31"]}}
+        ok, ir2, _reason, notes = self._g(ir, start=None)
+        self.assertTrue(ok)
+        self.assertEqual(ir["time"], ir2["time"])
+        self.assertEqual([], notes)
+        ir_f = {"metric": "gmv", "time": {"range": ["2026-11-10", "2026-11-15"]}}
+        ok, _ir2, reason, _notes = self._g(ir_f, start=None)
+        self.assertFalse(ok)
+        self.assertIn("数据还没有发生", reason or "")
+
+
 if __name__ == "__main__":
     unittest.main()

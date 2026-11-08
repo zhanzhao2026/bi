@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """场景覆盖矩阵(§17 planner 加固 + §16.5 分析类扩容的质量护栏):
-63 个场景 × 11 组,对运行中的后端做黑盒验证。
+65 个场景 × 12 组,对运行中的后端做黑盒验证。
 
 用法(标准库实现,可独立运行,不依赖 app 包与第三方库):
-    cd backend && .venv/bin/python scripts/scenario_matrix.py            # 全量 63 场景
+    cd backend && .venv/bin/python scripts/scenario_matrix.py            # 全量 65 场景
     .venv/bin/python scripts/scenario_matrix.py --group 时间             # 只跑某组
     .venv/bin/python scripts/scenario_matrix.py --filter T07,U01        # 只跑指定 id
     .venv/bin/python scripts/scenario_matrix.py --out /tmp/x.json       # 指定报告路径
@@ -17,6 +17,8 @@
   组⑥/⑦的期望由「答错比拒答严重」原则制定。
 - 组⑨归因/⑩变化排名/⑪分析追问(v15):M5 归因泛化(比率+可加指标)、
   M4 两期变化贡献排名、「为什么」追问继承升级。
+- 组⑫覆盖窗口(v17):窗口起止两侧对称防越界——整体越界确定性拒答、
+  部分越界截断并注明。
 - 输出:控制台表格 + JSON 报告(默认 /tmp/scenario_report.json)。
 
 时间锚点:data_as_of = 2026-11-06(与 models.yml data_as_of_query 的 DB 水位一致)。
@@ -33,9 +35,10 @@ from datetime import date, timedelta
 BASE_DEFAULT = "http://127.0.0.1:8310"
 ASOF = date(2026, 11, 6)          # 数据水位(MAX(pay_date))
 ASOF_S = ASOF.isoformat()
+DATA_START = "2026-08-09"         # 数据起始日(MIN(pay_date),v17 覆盖窗口防线)
 
 GROUPS = ["①时间", "②指标", "③维度筛选", "④商品下钻", "⑤排名", "⑥边界", "⑦不可表达", "⑧多轮继承",
-          "⑨归因", "⑩变化排名", "⑪分析追问"]
+          "⑨归因", "⑩变化排名", "⑪分析追问", "⑫覆盖窗口"]
 
 
 # ---------------- 时间帮助函数(全部由 ASOF 推导,不写死星期几) ----------------
@@ -106,8 +109,11 @@ def build_scenarios() -> list:
            {"card": "summary", "metric": "gmv", "time": {"preset": "yesterday"}},
            "规则=yesterday/gmv 汇总(单测既有结论)"),
         _S("T02", g, "前天卖了多少?",
-           {"card": "summary", "metric": "gmv", "time": {"range": qiantian()}},
-           "规则=error(「卖了多少」无指标词;timelex 前天已支持)", note="期望范围=[前天,前天]"),
+           {"card": "summary", "time": {"range": qiantian()},
+            "any_of": [{"metric": "gmv"}, {"metric": "order_cnt"}]},
+           "规则=error(「卖了多少」无指标词;timelex 前天已支持)",
+           note="期望范围=[前天,前天];「卖了多少」gmv/order_cnt 两可,由 LLM 判定"
+                "(本场景锁的是「前天」的时间解析,指标不作强断言)"),
         _S("T03", g, "最近3天订单数是多少?",
            {"card": "summary", "metric": "order_cnt", "time": {"range": rel_days(3)}},
            "规则=range 最近3天/order_cnt(v14 timelex)"),
@@ -137,8 +143,8 @@ def build_scenarios() -> list:
             "compare": "range"},
            "规则=主窗口+compare 显式区间(§16.1)"),
         _S("T11", g, "今年以来GMV是多少?",
-           {"card": "summary", "metric": "gmv", "time": {"range": ytd()}},
-           "规则=年初至今(v14)"),
+           {"card": "summary", "metric": "gmv", "time": {"range": [DATA_START, ASOF.isoformat()]}},
+           "规则=年初至今(v14);v17 覆盖窗口防线把起点截断到数据起始(数字不变,注明实际口径)"),
         _S("T12", g, "双十一那几天的GMV怎么样?",
            {"card": "summary", "metric": "gmv", "time": {"range": S11}},
            "规则=last_30d(无双十一词,语义漂移);LLM 须给截断 range 11-01~11-06"),
@@ -276,11 +282,11 @@ def build_scenarios() -> list:
     SC += [
         _S("U01", g, "女装今年以来退款金额比数码多多少?",
            {"card": "error", "status": "error", "title": UNSUP_TITLE},
-           "规则=summary(两类目合并求和,数字对但答非所问);LLM 必须 unsupportable",
+           "规则=cross_group(v17 确定性拒答,同组≥2筛值+比较句式;不再合并求和)",
            note="核心危险用例(任务背景失分场景同型)"),
         _S("U02", g, "女装客单价比数码高多少?",
            {"card": "error", "status": "error", "title": UNSUP_TITLE},
-           "规则=summary(合并筛选);LLM 必须 unsupportable"),
+           "规则=cross_group(v17 确定性拒答;规则模式也不再给出合并筛选的错误答案)"),
         _S("U03", g, "明年GMV预测一下",
            {"card": "error", "status": "error", "title": UNSUP_TITLE},
            "规则=summary(未来时间照查,结果为空);LLM 必须 unsupportable(预测类)"),
@@ -364,6 +370,19 @@ def build_scenarios() -> list:
            "规则=why 追问继承升级 M5(继承退款率)",
            pre=["最近30天退款率是多少?"],
            note="同 session:先问退款率,再追问为什么上升 → 退款率归因(pp 瀑布)"),
+    ]
+
+    # ============ ⑫ 覆盖窗口(2) ============
+    g = GROUPS[11]
+    SC += [
+        _S("C01", g, "今年以来GMV是多少?",
+           {"card": "summary", "metric": "gmv"},
+           "规则=YTD range(2026-01-01起)→ 覆盖窗口防线截断到数据起始并注明(数字=90天合计)",
+           note="v17 部分越界:卡含「已按 数据起始~水位 统计」注明,不再无声冒充全年口径"),
+        _S("C02", g, "从2025-01-01到2025-06-30的GMV是多少?",
+           {"card": "error"},
+           "规则=from_to range 整体早于数据起始 → 确定性拒答,理由引用真实覆盖窗口",
+           note="v17 整体越界:拒答理由是系统的「数据仅覆盖 起始~水位」事实,非 LLM 措辞"),
     ]
     return SC
 

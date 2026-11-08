@@ -70,6 +70,9 @@ class Semantic:
         self.version = int(version_doc.get("version", 0))
         self.data_as_of_query = (self.models.get("data_as_of_query")
                                  or f"SELECT MAX({self.fact_date_col}) FROM {self.fact_table}")
+        # 数据起始日(v17 覆盖窗口防线):与水位对称,窗口早于该日无数据
+        self.data_start_query = (self.models.get("data_start_query")
+                                 or f"SELECT MIN({self.fact_date_col}) FROM {self.fact_table}")
         self.dims: dict = dims_doc.get("dims", {}) or {}
         self.time_presets: list = list(dims_doc.get("time_presets", []) or [])
         # 层级维度(§16.2):children 引用必须已在 dims 中声明(fail fast)
@@ -286,6 +289,32 @@ def get_data_as_of(max_age: float = 30.0):
         with _asof_lock:
             _asof_cache["ts"] = now
             _asof_cache["value"] = value
+    return value
+
+
+# ---------------- data_start(带缓存,v17 覆盖窗口防线) ----------------
+_start_cache = {"ts": 0.0, "value": None}
+_start_lock = threading.Lock()
+
+
+def get_data_start(max_age: float = 30.0):
+    """数据起始日:MIN(pay_date),YYYY-MM-DD 字符串;DB 不可用返回 None。"""
+    now = time.time()
+    with _start_lock:
+        if _start_cache["value"] and now - _start_cache["ts"] < max_age:
+            return _start_cache["value"]
+    sem = get_semantic()
+    try:
+        row = query(sem.data_start_query)
+        raw = list(row[0].values())[0] if row and row[0] else None
+        value = str(raw) if raw is not None else None
+    except Exception as e:
+        logger.warning("data_start query failed: %s", e)
+        value = None
+    if value:
+        with _start_lock:
+            _start_cache["ts"] = now
+            _start_cache["value"] = value
     return value
 
 

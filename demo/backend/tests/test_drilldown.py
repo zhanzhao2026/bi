@@ -293,6 +293,10 @@ class TestDrilldownCardE2E(unittest.TestCase):
     def setUpClass(cls):
         from app.engine.orchestrator import Orchestrator
         cls.orch = Orchestrator()
+        # 本类断言「叙事首句含 TOP1 完整商品名」:必须走规则叙述。
+        # LLM 叙述(glm-4-flash)会自行缩短商品名,断言随措辞波动(实测偶发)——
+        # 与 test_attribution E2E 同一约定:卡片结构/叙事断言一律禁用网关保持确定性。
+        cls.orch.gateway.enabled = lambda: False
 
     def test_beauty_refund_rank_card(self):
         card, _raw, done = self.orch.run_once("美妆里哪些商品退款最多", "ceo")

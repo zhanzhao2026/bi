@@ -14,7 +14,7 @@ from ..core.config import DEMO_USERS
 from ..core.db import inline_sql, query
 from ..llm.gateway import LLMGateway
 from ..semantic import compiler
-from ..semantic.loader import get_data_as_of, get_filter_options, get_semantic
+from ..semantic.loader import get_data_as_of, get_data_start, get_filter_options, get_semantic
 from . import attribution, guards, rules
 from . import session as session_store
 from .cards import (bar_chart, col, fmt_amount, fmt_count, fmt_pct1, fmt_pp,
@@ -181,16 +181,31 @@ class Orchestrator:
             # (unsupportable/clarify)不得覆盖——归因是确定性分析模式
             # (docs/04 M5,含追问继承升级),宁可按规则算也不放走
             rules_attr = bool(parsed.get("ok") and parsed.get("why_attr"))
+            # 跨筛选组对比(v17):同一筛选组 ≥2 取值 + 比较句式 → 确定性拒答,
+            # 规则/LLM 双模式一致(此前规则模式给出两类目合并求和的错误答案,
+            # LLM 模式的拒答全凭 LLM 自觉——两个模式都不再放行)
+            if parsed.get("ok") and parsed.get("cross_group"):
+                card = self._unsupportable_card(
+                    trace_id,
+                    "跨筛选组对比(如「A比B多多少」)需要分组对比,当前一次查询只能聚合"
+                    "一个筛选范围。请分开问,例如:女装今年以来退款金额是多少、数码今年以来退款金额是多少。")
+                status = "error"
 
-            if self.gateway.enabled():
+            if card is None and self.gateway.enabled():
                 try:
                     llm_ir = self.gateway.plan_ir(
                         question, self.semantic, session_store.summary(session_ctx), options)
                     if isinstance(llm_ir, dict) and str(llm_ir.get("unsupportable") or "").strip():
                         # 逃生口1(§17):LLM 诚实拒答 —— 问题超出语义层可表达范围
-                        # (跨筛选组对比/预测/无指标),宁可拒答也不给语义漂移的数字
-                        if rules_attr:
-                            logger.info("llm unsupportable ignored: rules attribution intent wins")
+                        # (竞品/预测/无指标等),宁可拒答也不给语义漂移的数字。
+                        # 守卫(v17,窄条件):规则已解析出显式窗口且窗口超出数据覆盖
+                        # 时,答案已被覆盖窗口防线确定性裁决(整体越界拒答/部分越界
+                        # 截断+注明),LLM 不得再拒——实测 glm-4-flash 会把
+                        # 「今年以来GMV」这类可答问题也拒掉(同问不同答)。
+                        # 竞品/预测类问题规则层只 superficial 命中指标词
+                        # (time_range=None),语义判定归 LLM(答错比拒答严重)。
+                        if rules_attr or self._rules_time_out_of_coverage(parsed, asof):
+                            logger.info("llm unsupportable ignored: rules window deterministically answerable")
                         else:
                             card = self._unsupportable_card(trace_id,
                                                             str(llm_ir["unsupportable"]))
@@ -203,8 +218,10 @@ class Orchestrator:
                         # 的场景;裸追问(「为什么」)按上下文确定性处理:
                         #   有可继承的上一轮数据问题 → 直接继承 IR(随后升级归因);
                         #   无任何分析对象 → 诚实拒答(选时间也答不了,不该出时间选项)
-                        if rules_attr:
-                            logger.info("llm clarify ignored: rules attribution intent wins")
+                        # 守卫(v17,窄条件,同逃生口1):规则窗口已被覆盖防线
+                        # 确定性裁决时不被 clarify 覆盖;语义漂移类仍归 LLM
+                        if rules_attr or self._rules_time_out_of_coverage(parsed, asof):
+                            logger.info("llm clarify ignored: rules window deterministically answerable")
                         else:
                             prev_ir = (session_ctx or {}).get("ir") if session_ctx else None
                             if (rules.has_why_word(question) and prev_ir
@@ -228,28 +245,23 @@ class Orchestrator:
                                 llm_model = self.gateway.get_config().get("model")
                     elif isinstance(llm_ir, dict) and llm_ir.get("meta"):
                         # 逃生口3(§17):问候/身份/能力类对话(「你是谁」「你能做什么」)
-                        # → 确定性自我介绍卡(内容固定、无数字,不经 LLM 叙述,零幻觉)
-                        card = self._meta_card(trace_id)
-                        status = "ok"
-                        ir = None
-                        llm_used = True
-                        llm_model = self.gateway.get_config().get("model")
+                        # → 确定性自我介绍卡(内容固定、无数字,不经 LLM 叙述,零幻觉)。
+                        # 守卫(v17 推广):规则已解析出可回答的数据问题时按规则作答
+                        # (「你好,最近GMV怎么样」是问数,不出自我介绍)
+                        if parsed.get("ok"):
+                            logger.info("llm meta ignored: rules parsed an answerable question")
+                        else:
+                            card = self._meta_card(trace_id)
+                            status = "ok"
+                            ir = None
+                            llm_used = True
+                            llm_model = self.gateway.get_config().get("model")
                     elif llm_ir is not None:
                         cand = compiler.normalize_ir(llm_ir)
                         ok, err = compiler.validate_ir(cand, self.semantic, options)
-                        future_reason = None
-                        if ok:
-                            ok, cand, future_reason = self._guard_future_time(cand, asof)
                         if ok:
                             ir = cand
                             source = "llm"
-                            llm_used = True
-                            llm_model = self.gateway.get_config().get("model")
-                        elif future_reason:
-                            # §17 数据水位防线:整个查询窗口晚于数据水位 → 确定性诚实拒答
-                            card = self._unsupportable_card(trace_id, future_reason)
-                            status = "error"
-                            ir = None
                             llm_used = True
                             llm_model = self.gateway.get_config().get("model")
                         else:
@@ -280,13 +292,28 @@ class Orchestrator:
                 if not ok:
                     card = self._error_card(trace_id)
                     status = "error"
+                else:
+                    # §17 覆盖窗口防线(v17,规则/LLM 两路径共用):窗口超出数据覆盖
+                    # [data_start, asof] → 整体越界确定性拒答(理由引用真实覆盖窗口),
+                    # 部分越界截断并注明(数字不变,口径如实)
+                    ok2, ir, cov_reason, cov_notes = self._guard_time_window(
+                        ir, asof, get_data_start())
+                    if not ok2:
+                        card = self._unsupportable_card(trace_id, cov_reason)
+                        status = "error"
+                        ir = None
+                    else:
+                        notes.extend(cov_notes)
 
         if card is not None:
             timings["understand"] = _ms(t0)
             timings["plan"] = _ms(t_plan)
             clarify_note = bool((card or {}).get("assume_note"))
+            cov_refuse = (status == "error" and (card.get("narrative") or [""])[0]
+                          .startswith("数据仅覆盖"))
             yield ("stage", {"step": "understand", "label": "理解问题", "status": "done",
-                             "detail": ("该问题暂无法映射到现有指标" if status == "error"
+                             "detail": ("该时间范围超出数据覆盖范围" if cov_refuse
+                                        else "该问题暂无法映射到现有指标" if status == "error"
                                         else "已识别为问候/自我介绍" if (card or {}).get("type") == "summary"
                                         else "需要先确认时间范围" if clarify_note
                                         else "需要先确认分析维度")})
@@ -340,8 +367,14 @@ class Orchestrator:
                 ir["compare"] = {"type": "range", "range": list(pair["compare"]),
                                  "label": str(pair.get("compare_label") or "")}
             elif parsed.get("card") == "attribution" or parsed.get("delta_dir"):
-                # 两期分析的基期窗口归规则所有:无显式对比词时一律 prev_period
-                # (防 LLM 自选对比窗口改变归因/排名结论)
+                # 两期分析的窗口归规则所有(v17 补齐主窗口):规则已解析出显式
+                # 时间词时,LLM 不得改写主窗口(实测「最近30天的退款率比之前30天
+                # 高了多少」主窗被 LLM 改成上期窗口 10-01~10-07,本期/上期口径
+                # 错位);基期窗口无显式对比词时一律 prev_period
+                if parsed.get("time_preset"):
+                    ir["time"] = {"preset": parsed["time_preset"]}
+                elif parsed.get("time_range"):
+                    ir["time"] = {"range": list(parsed["time_range"])}
                 ir["compare"] = "prev_period"
         # 口径守卫:新客占比本身按新老客口径统计——「新客占比」会被 parse_filters
         # 误挂 user_type=新客(指标恒为 100%),LLM IR 同样在此拦下并注明。
@@ -351,6 +384,24 @@ class Orchestrator:
         start, end = compiler.resolve_time(ir["time"], data_as_of)
         # 对比窗口:prev_period 等长平移,或「X比Y」解析出的显式 range(§16.1)
         prev = compiler.resolve_compare(ir, start, end)
+        # 覆盖窗口防线延伸(v17):上一期窗口任何部分早于数据起始 → 两期口径不一致
+        # (部分越界)或对比必然为空(整体越界),确定性省略对比——
+        # 不再出「较上一期无数据」这类噪声,也不做不对等的两期对比
+        if prev is not None:
+            _ds = get_data_start()
+            if _ds:
+                try:
+                    ds = dt.date.fromisoformat(str(_ds)[:10])
+                    ps = dt.date.fromisoformat(str(prev[0])[:10])
+                    pe = dt.date.fromisoformat(str(prev[1])[:10])
+                except ValueError:
+                    ps = pe = ds = None
+                if ds and ps < ds:
+                    notes.append(f"上一期窗口({ps.isoformat()}~{pe.isoformat()})早于数据起始日 "
+                                 f"{ds.isoformat()},两期对比口径不完整,已省略对比。")
+                    ir = dict(ir)
+                    ir["compare"] = "none"
+                    prev = None
 
         ir_time = ir.get("time") or {}
         time_label = compiler.time_label(ir_time)
@@ -678,9 +729,12 @@ class Orchestrator:
                     word = "增长" if pct > 0 else "下降"
                     n.append(f"较{ctx['prev_label']}{word} {abs(pct):.1f}%。")
         result["narrative"] = n
-        result["narrator_payload"] = {"指标": name, "时间范围": f"{ctx['start']}~{ctx['end']}",
-                                      "当前值": fmt(value),
-                                      "上一期值": fmt(prev_value) if prev_value is not None else "无"}
+        # payload 卫生:无上一期值时整个省略「上一期值」键——写「无」会诱导叙述模型
+        # 编出「较上一期无数据」(实测 glm-4-flash 会照念;没有对比意图时尤其误导)
+        _np = {"指标": name, "时间范围": f"{ctx['start']}~{ctx['end']}", "当前值": fmt(value)}
+        if prev_value is not None:
+            _np["上一期值"] = fmt(prev_value)
+        result["narrator_payload"] = _np
         result["raw"].update({"value": value, "prev": prev_value, "metrics": [mkey]})
         result["card_fn"] = lambda tid, dao, notes, atext: self._finish_card(
             "summary", tid, dao, f"{ctx['time_label']}{scope}{name}", kpis, None, None,
@@ -1488,13 +1542,24 @@ class Orchestrator:
         return c
 
     def _meta_card(self, trace_id: str) -> dict:
-        """身份/问候类问题(「你是谁」「你好」)→ 自我介绍卡(规则确定性,不走 LLM)。"""
+        """身份/问候/能力/数据范围类问题(「你是谁」「能查到什么范围」)→
+        自我介绍卡(规则确定性,不走 LLM);含数据覆盖行,能力询问一并答到位。"""
         c = self._base_card("summary", trace_id, "我是 BizInsight 经营分析助手")
         c["narrative"] = [
             "我负责回答交易域的经营数据问题:GMV、订单数、支付人数、客单价、支付件数、退款金额/退款率、新客占比等。",
             "支持时间(最近N天/周/月/旬)、类目/渠道/新老客筛选,以及趋势、排名、两期变化排名与归因分析;每个数字都来自数仓实际查询并经过核验。",
             "薪酬等敏感信息、订单明细、语义层没有的指标,我会坦诚拒答而不是编一个数。",
         ]
+        try:
+            start_s, asof_s = get_data_start(), get_data_as_of()
+            if start_s and asof_s:
+                s_d = dt.date.fromisoformat(str(start_s)[:10])
+                a_d = dt.date.fromisoformat(str(asof_s)[:10])
+                c["narrative"].insert(
+                    1, f"数据覆盖 {s_d.isoformat()} ~ {a_d.isoformat()}(共 {(a_d - s_d).days + 1} 天),"
+                       f"更早时段暂无数据;时间最多可以查到 {a_d.isoformat()}。")
+        except Exception:
+            pass
         c["followups"] = ["最近30天的整体经营情况", "近30天退款率为什么上升",
                           "哪些类目GMV下降最明显"]
         return c
@@ -1540,20 +1605,78 @@ class Orchestrator:
         return c
 
     @staticmethod
-    def _guard_future_time(ir: dict, asof) -> tuple[bool, dict, str | None]:
-        """§17 数据水位防线(LLM 模式专用):IR time.range 不得晚于 data_as_of。
+    def _rules_time_out_of_coverage(parsed: dict, asof) -> bool:
+        """v17 逃生口守卫的窄条件:规则已解析出显式窗口且该窗口超出数据覆盖
+        → 答案已被覆盖窗口防线确定性裁决(整体越界拒答/部分越界截断+注明),
+        LLM 的 unsupportable/clarify 不得再覆盖(实测 glm-4-flash 会把
+        「今年以来GMV」这类可答问题也拒掉,同问不同答)。
+        preset/无时间词不在此列:竞品/预测类问题规则层只 superficial 命中指标词,
+        语义判定归 LLM(答错比拒答严重,B03/U03)。"""
+        tr = (parsed or {}).get("time_range")
+        if not ((parsed or {}).get("ok") and isinstance(tr, list) and len(tr) == 2 and asof):
+            return False
+        try:
+            a = asof if isinstance(asof, dt.date) else dt.date.fromisoformat(str(asof)[:10])
+            s = dt.date.fromisoformat(str(tr[0])[:10])
+            e = dt.date.fromisoformat(str(tr[1])[:10])
+        except ValueError:
+            return False
+        start = get_data_start()
+        if not start:
+            return False
+        try:
+            ds = dt.date.fromisoformat(str(start)[:10])
+        except ValueError:
+            return False
+        return s < ds or e > a   # 窗口未完全落在覆盖内 → 防线会确定性处理
 
-        - 整个窗口晚于水位 → (False, ir, 原因),调用方出诚实拒答卡(不给查空数据);
-        - 部分超出 → 止日截断到水位(与双十一截断规则一致);compare 显式窗口同理
-          (整个晚于水位 → 丢弃对比,部分超出 → 截断)。
-        规则路径不经此函数,既有行为零变化。
+    @staticmethod
+    def _guard_time_window(ir: dict, asof, data_start=None) -> tuple[bool, dict, str | None, list[str]]:
+        """§17 覆盖窗口防线(v17,规则/LLM 两路径共用):IR 的显式 range 必须落在
+        数据覆盖 [data_start, data_as_of] 内。
+
+        - 窗口整体晚于水位(未来)或整体早于数据起始(历史缺失)→ (False, ir, 原因, []),
+          调用方出确定性诚实拒答卡——理由引用真实覆盖窗口,不假手 LLM 措辞
+          (此前 LLM 自己写原因,把「早于数据起始」说成「超出数据截至日」);
+        - 部分超出 → 截断到覆盖边界并返回 note(与双十一截断规则一致,数字不变,
+          只是如实注明实际统计窗口,不再无声改写口径);compare 显式窗口同理
+          (整体越界 → 丢弃对比,部分超出 → 截断)。
+        - asof / data_start 不可用时跳过对应检查(DB 异常时宁可不拦也不误拦)。
         """
+        out_notes: list[str] = []
         if asof is None:
-            return True, ir, None
+            return True, ir, None, out_notes
         try:
             asof_d = asof if isinstance(asof, dt.date) else dt.date.fromisoformat(str(asof)[:10])
         except ValueError:
-            return True, ir, None
+            return True, ir, None, out_notes
+        start_d = None
+        if data_start:
+            try:
+                start_d = (data_start if isinstance(data_start, dt.date)
+                           else dt.date.fromisoformat(str(data_start)[:10]))
+            except ValueError:
+                start_d = None
+
+        def _clip(s: dt.date, e: dt.date) -> tuple[bool, list[str] | None, str | None, str | None]:
+            """单窗口裁剪:ok=False 表示整体越界(拒答/丢弃);clip_desc=截断后窗口。"""
+            if s > asof_d:
+                return False, None, (
+                    f"该时间段({s.isoformat()}~{e.isoformat()})晚于数据截至日 "
+                    f"{asof_d.isoformat()},数据还没有发生,无法查询。"), None
+            if start_d and e < start_d:
+                return False, None, (
+                    f"数据仅覆盖 {start_d.isoformat()}~{asof_d.isoformat()},"
+                    f"该时间段({s.isoformat()}~{e.isoformat()})早于数据起始日,无法查询。"), None
+            s2, e2 = s, e
+            if start_d and s < start_d:
+                s2 = start_d
+            if e > asof_d:
+                e2 = asof_d
+            if (s2, e2) == (s, e):
+                return True, None, None, None
+            return True, [s2.isoformat(), e2.isoformat()], None, f"{s2.isoformat()}~{e2.isoformat()}"
+
         t = ir.get("time") or {}
         rng = t.get("range") if isinstance(t, dict) else None
         if isinstance(rng, list) and len(rng) == 2:
@@ -1561,16 +1684,16 @@ class Orchestrator:
                 s = dt.date.fromisoformat(str(rng[0])[:10])
                 e = dt.date.fromisoformat(str(rng[1])[:10])
             except ValueError:
-                return True, ir, None
-            if s > asof_d:
-                return False, ir, (
-                    f"该时间段({s.isoformat()}~{e.isoformat()})晚于数据截至日 "
-                    f"{asof_d.isoformat()},数据还没有发生,无法查询。")
-            if e > asof_d:
+                return True, ir, None, out_notes
+            ok, range2, reason, clip = _clip(s, e)
+            if not ok:
+                return False, ir, reason, out_notes
+            if clip:
                 t = dict(t)
-                t["range"] = [rng[0], asof_d.isoformat()]
+                t["range"] = range2
                 ir = dict(ir)
                 ir["time"] = t
+                out_notes.append(f"数据覆盖不足,该范围已按 {clip} 统计。")
         c = ir.get("compare")
         if isinstance(c, dict) and isinstance(c.get("range"), list) and len(c["range"]) == 2:
             try:
@@ -1579,15 +1702,18 @@ class Orchestrator:
             except ValueError:
                 cs = ce = None
             if cs and ce:
-                if cs > asof_d:
+                ok, range2, reason, clip = _clip(cs, ce)
+                if not ok:
                     ir = dict(ir)
                     ir["compare"] = "none"
-                elif ce > asof_d:
+                    out_notes.append("对比窗口超出数据覆盖范围,已省略对比。")
+                elif clip:
                     c2 = dict(c)
-                    c2["range"] = [c["range"][0], asof_d.isoformat()]
+                    c2["range"] = range2
                     ir = dict(ir)
                     ir["compare"] = c2
-        return True, ir, None
+                    out_notes.append(f"对比窗口已按 {clip} 截断统计。")
+        return True, ir, None, out_notes
 
     # ================= 审计 =================
 

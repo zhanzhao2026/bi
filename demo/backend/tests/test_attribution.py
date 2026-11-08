@@ -365,5 +365,159 @@ class TestMetaEscapeE2E(unittest.TestCase):
         self.assertEqual("error", done.get("status"))
 
 
+class TestCoverageWindowE2E(unittest.TestCase):
+    """§17 覆盖窗口防线(v17)E2E:YTD 部分越界 → 截断+注明(规则路径);
+    整体早于数据起始 → 确定性拒答(理由引用真实覆盖窗口);meta 介绍卡含
+    数据覆盖行(「能查到什么范围」类能力询问的确定性应答)。"""
+
+    @classmethod
+    def setUpClass(cls):
+        from app.engine.orchestrator import Orchestrator
+        cls.orch = Orchestrator()
+        cls.orch.gateway.enabled = lambda: False
+
+    def test_ytd_clipped_and_noted(self):
+        """「今年以来GMV」→ 数字不变(数据起始前无行),注明实际覆盖窗口;
+        LLM 违规附加的 prev_period(上一期必然为空)被确定性省略,
+        不再出「较上一期无数据」噪声。"""
+        from app.semantic.loader import get_data_as_of, get_data_start
+        s, a = get_data_start(), get_data_as_of()
+        card, _raw, done = self.orch.run_once("今年以来GMV是多少", "ceo")
+        self.assertEqual("summary", card.get("type"))
+        self.assertTrue(any(f"已按 {s}" in n for n in (card.get("narrative") or [])),
+                        f"应含覆盖截断注明: {card.get('narrative')}")
+        self.assertNotIn("较上一期", " ".join(card.get("narrative") or []),
+                         "上一期窗口早于数据起始 → 对比应被省略,不出「较上一期无数据」")
+        self.assertEqual("ok", done.get("status"))
+
+    def test_llm_prev_period_out_of_coverage_dropped(self):
+        """LLM IR 附加 prev_period(主窗 YTD → 上一期整体早于数据起始)→
+        对比确定性省略 + 注明,不出「较上一期无数据」(live 实测暴露)。"""
+        from app.engine.orchestrator import Orchestrator
+        orch = Orchestrator()
+        orch.gateway.enabled = lambda: True
+        orch.gateway.plan_ir = lambda *a, **k: {
+            "metric": "gmv", "time": {"range": ["2026-01-01", "2026-11-06"]},
+            "dims": [], "filters": {"category": [], "channel": [], "user_type": []},
+            "granularity": "none", "compare": "prev_period", "order": "desc", "limit": 10}
+        orch.gateway.narrate = lambda payload: None   # 叙述留规则模式,保持测试封闭
+        card, _raw, done = orch.run_once("今年以来GMV是多少", "ceo")
+        self.assertEqual("summary", card.get("type"))
+        self.assertNotIn("较上一期", " ".join(card.get("narrative") or []))
+        self.assertTrue(any("已省略对比" in n for n in (card.get("narrative") or [])),
+                        f"应注明省略对比: {card.get('narrative')}")
+        self.assertEqual("ok", done.get("status"))
+
+    def test_pre_start_range_refused_with_factual_reason(self):
+        """「从2025-01-01到2025-06-30」整体早于数据起始 → 确定性拒答,
+        理由是系统的覆盖窗口事实,不是 LLM 编的「超出数据截至日」。"""
+        from app.semantic.loader import get_data_as_of, get_data_start
+        s, a = get_data_start(), get_data_as_of()
+        card, _raw, done = self.orch.run_once("从2025-01-01到2025-06-30的GMV是多少", "ceo")
+        self.assertEqual("error", card.get("type"))
+        self.assertTrue((card.get("narrative") or [""])[0]
+                        .startswith(f"数据仅覆盖 {s}~{a}"),
+                        f"拒答理由应引用真实覆盖窗口: {card.get('narrative')}")
+        self.assertEqual("error", done.get("status"))
+
+    def test_meta_card_has_coverage_line(self):
+        from app.semantic.loader import get_data_as_of, get_data_start
+        s, a = get_data_start(), get_data_as_of()
+        card = self.orch._meta_card("tr_cov")
+        self.assertTrue(any(n.startswith(f"数据覆盖 {s} ~ {a}")
+                            for n in (card.get("narrative") or [])),
+                        f"meta 卡应含数据覆盖行: {card.get('narrative')}")
+
+    def test_prompt_renders_coverage_and_meta_scope(self):
+        """planner prompt:数据覆盖窗口上下文 + 能力/数据范围询问属于 meta。"""
+        from app.llm.prompts import render_planner_system
+        from app.semantic.loader import get_data_as_of, get_data_start
+        s, a = get_data_start(), get_data_as_of()
+        text = render_planner_system(_sem(), {})
+        self.assertIn(f"数据覆盖 = {s} ~ {a}", text)
+        self.assertIn("能查到什么范围", text)
+        self.assertIn("不得编造与事实不符的说法", text)
+
+    def test_narrator_prompt_forbids_unsourced_compare(self):
+        """narrator 硬性要求:输入没有对比数据时禁止「较上一期/环比」表述
+        (live 实测:普通汇总问数被叙述成「较上一期无数据」——编造不存在的事实)。"""
+        from app.llm.prompts import render_narrator_system
+        text = render_narrator_system(_sem())
+        self.assertIn("较上一期", text)
+        self.assertIn("编造", text)
+
+
+class TestEscapeGuardsE2E(unittest.TestCase):
+    """v17 逃生口守卫推广 + 跨筛选组确定性拒答:
+    - 规则已解析出可回答问题(parsed.ok)→ LLM 的 unsupportable/clarify/meta
+      一律不得覆盖(同问不同答的方差根除);
+    - 同一筛选组 ≥2 取值 + 比较句式 → 双模式都确定性拒答(此前规则模式
+      给出两类目合并求和的错误答案)。"""
+
+    def test_cross_group_refuses_in_rules_mode(self):
+        """U01 规则模式:不再给出「女装/数码」合并求和的错误答案(17.6万),
+        确定性拒答,理由给分开问的指引。"""
+        from app.engine.orchestrator import Orchestrator
+        orch = Orchestrator()
+        orch.gateway.enabled = lambda: False
+        card, _raw, done = orch.run_once("女装今年以来退款金额比数码多多少", "ceo")
+        self.assertEqual("error", card.get("type"))
+        self.assertIn("跨筛选组对比", (card.get("narrative") or [""])[0])
+        self.assertEqual("error", done.get("status"))
+
+    def test_llm_unsupportable_ignored_when_rules_ok(self):
+        """规则窗口超出覆盖(答案已被防线确定性裁决)→ LLM unsupportable 被守卫
+        忽略,按规则 IR 正常作答(T11 实测同问不同答的根除)。"""
+        from app.engine.orchestrator import Orchestrator
+        orch = Orchestrator()
+        orch.gateway.enabled = lambda: True
+        orch.gateway.plan_ir = lambda *a, **k: {"unsupportable": "不支持今年以来的数据"}
+        card, _raw, done = orch.run_once("今年以来GMV是多少", "ceo")
+        self.assertEqual("summary", card.get("type"))
+        self.assertEqual("ok", done.get("status"))
+
+    def test_llm_unsupportable_wins_on_semantic_drift(self):
+        """竞品/预测类:规则层只 superficial 命中指标词(无显式窗口),
+        LLM 的 unsupportable 必须生效——答错比拒答严重(B03/U03 矩阵)。"""
+        from app.engine.orchestrator import Orchestrator
+        orch = Orchestrator()
+        orch.gateway.enabled = lambda: True
+        orch.gateway.plan_ir = lambda *a, **k: {"unsupportable": "竞品数据不在本系统数据范围内"}
+        card, _raw, done = orch.run_once("竞品A的GMV是多少?", "ceo")
+        self.assertEqual("error", card.get("type"))
+        self.assertIn("竞品", " ".join(card.get("narrative") or []))
+        self.assertEqual("error", done.get("status"))
+
+    def test_attribution_main_window_rules_owned(self):
+        """两期分析主窗口归规则所有:LLM IR 改写主窗口被纠正(eval Q18 实测:
+        「最近30天…比之前30天高了多少」主窗被 LLM 改成上期窗口,口径错位)。"""
+        from app.engine.orchestrator import Orchestrator
+        orch = Orchestrator()
+        orch.gateway.enabled = lambda: True
+        orch.gateway.plan_ir = lambda *a, **k: {
+            "metric": "refund_rate", "time": {"range": ["2026-10-01", "2026-10-07"]},
+            "dims": [], "filters": {"category": [], "channel": [], "user_type": []},
+            "granularity": "none", "compare": "prev_period", "order": "desc", "limit": 10}
+        orch.gateway.narrate = lambda payload: None
+        card, raw, done = orch.run_once("美妆最近30天的退款率比之前30天高了多少", "ceo")
+        self.assertEqual("attribution", card.get("type"))
+        self.assertTrue((card.get("title") or "").startswith("最近30天"),
+                        f"主窗口应来自规则解析的最近30天: {card.get('title')}")
+        self.assertTrue(any("美妆" in n for n in (card.get("narrative") or [])))
+        self.assertEqual("ok", done.get("status"))
+
+    def test_llm_meta_ignored_when_rules_ok(self):
+        """「问候+数据意图」且规则可解析 → 按规则作答,不出自我介绍卡。"""
+        from app.engine.orchestrator import Orchestrator
+        orch = Orchestrator()
+        orch.gateway.enabled = lambda: True
+        orch.gateway.plan_ir = lambda *a, **k: {"meta": True}
+        orch.gateway.narrate = lambda payload: None
+        card, _raw, done = orch.run_once("最近30天GMV是多少", "ceo")
+        self.assertEqual("summary", card.get("type"))
+        self.assertIn("GMV", card.get("title") or "")
+        self.assertEqual("ok", done.get("status"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -275,5 +275,34 @@ _bind_parse_cases(TestTimeWords, TIME_CASES, _check_time, "time_word")
 _bind_parse_cases(TestIntentCards, CARD_CASES, _check_card, "card")
 
 
+class TestCrossGroup(unittest.TestCase):
+    """v17 跨筛选组对比:同一筛选组 ≥2 个取值 + 比较句式 → parsed.cross_group
+    (编排层确定性拒答,规则/LLM 双模式一致);纯并列/单筛值/时间对比不受影响。"""
+
+    def _cg(self, q):
+        return bool(_rules_parse(q).get("cross_group"))
+
+    def test_u01_cross_group(self):
+        self.assertTrue(self._cg("女装今年以来退款金额比数码多多少?"))
+        self.assertTrue(self._cg("女装客单价比数码高多少?"))
+
+    def test_respectively_and_which(self):
+        self.assertTrue(self._cg("女装和数码的退款金额分别是多少"))
+        self.assertTrue(self._cg("女装和数码哪个GMV高"))
+
+    def test_plain_conjunction_not_flagged(self):
+        """纯并列(无比较词)→ 不标记(「A和B合计」类合并意图仍可答)。"""
+        self.assertFalse(self._cg("女装和数码合计的退款金额是多少"))
+
+    def test_single_value_or_time_compare_not_flagged(self):
+        """单筛值、无筛值(旬/周时间对比)、新老客对比卡不受影响。"""
+        self.assertFalse(self._cg("女装今年以来退款金额是多少"))
+        self.assertFalse(self._cg("10月下旬比上旬客单价怎么样?"))
+        self.assertFalse(self._cg("本周GMV比上周变化了多少?"))
+        p = _rules_parse("对比一下最近30天新客和老客的客单价")
+        self.assertFalse(p.get("cross_group"), "新老客对比走内置 compare 卡,不标记")
+        self.assertEqual("compare", p.get("card"))
+
+
 if __name__ == "__main__":
     unittest.main()

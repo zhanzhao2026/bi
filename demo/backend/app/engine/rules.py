@@ -71,6 +71,8 @@ OVERVIEW_RE = re.compile(_req("intent", "overview"))
 # delta_rank=变化贡献排名句式(M4),方向由命中词推断
 WHY_RE = re.compile(_req("intent", "why"))
 DELTA_RANK_RE = re.compile(_req("intent", "delta_rank"))
+# 跨筛选组对比句式(v17):命中 + 同一筛选组 ≥2 取值 → 确定性拒答
+CROSS_GROUP_RE = re.compile(_req("intent", "cross_group"))
 # 退款域细分:走势按"退款率"词判定;排名按金额词判定(词在 terms.yml)
 REFUND_TREND_RATE_RE = re.compile(_req("intent", "refund_trend_rate"))
 REFUND_RANK_AMT_RE = re.compile(_req("intent", "refund_rank_amt"))
@@ -345,5 +347,10 @@ def _mk(domain, card, q, time_preset, time_range, filters, metric=None, compare=
         "why_attr": why_attr,
         "delta_dir": delta_dir,
         "compare_focus": compare_focus,
+        # 跨筛选组对比(v17):同一筛选组命中 ≥2 个取值且含比较句式 → 编排层
+        # 确定性拒答(一次查询只能聚合一个筛选范围,合并求和是答非所问)
+        "cross_group": bool(CROSS_GROUP_RE.search(q)
+                            and any(isinstance(v, list) and len(v) >= 2
+                                    for v in (filters or {}).values())),
         "question": q,
     }

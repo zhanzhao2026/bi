@@ -1,10 +1,10 @@
 {
- "ran_at": "2026-11-08 15:01:22",
+ "ran_at": "2026-11-08 17:13:25",
  "base": "http://127.0.0.1:8310",
  "asof": "2026-11-06",
  "summary": {
-  "total": 63,
-  "passed": 63,
+  "total": 65,
+  "passed": 65,
   "pass_rate": 100.0,
   "groups": {
    "①时间": {
@@ -48,6 +48,10 @@
     "passed": 4
    },
    "⑪分析追问": {
+    "total": 2,
+    "passed": 2
+   },
+   "⑫覆盖窗口": {
     "total": 2,
     "passed": 2
    }
@@ -99,17 +103,24 @@
    "q": "前天卖了多少?",
    "expect": {
     "card": "summary",
-    "metric": "gmv",
     "time": {
      "range": [
       "2026-11-04",
       "2026-11-04"
      ]
-    }
+    },
+    "any_of": [
+     {
+      "metric": "gmv"
+     },
+     {
+      "metric": "order_cnt"
+     }
+    ]
    },
    "rule": "规则=error(「卖了多少」无指标词;timelex 前天已支持)",
    "pre": [],
-   "note": "期望范围=[前天,前天]",
+   "note": "期望范围=[前天,前天];「卖了多少」gmv/order_cnt 两可,由 LLM 判定(本场景锁的是「前天」的时间解析,指标不作强断言)",
    "pass": true,
    "card_type": "summary",
    "ir": {
@@ -522,12 +533,12 @@
     "metric": "gmv",
     "time": {
      "range": [
-      "2026-01-01",
+      "2026-08-09",
       "2026-11-06"
      ]
     }
    },
-   "rule": "规则=年初至今(v14)",
+   "rule": "规则=年初至今(v14);v17 覆盖窗口防线把起点截断到数据起始(数字不变,注明实际口径)",
    "pre": [],
    "note": "",
    "pass": true,
@@ -536,7 +547,7 @@
     "metric": "gmv",
     "time": {
      "range": [
-      "2026-01-01",
+      "2026-08-09",
       "2026-11-06"
      ]
     },
@@ -1450,7 +1461,10 @@
     "filters": {
      "category": [],
      "channel": [
-      "付费推广"
+      "付费推广",
+      "自然流量",
+      "私域",
+      "直播"
      ],
      "user_type": []
     },
@@ -1934,13 +1948,13 @@
     "status": "error",
     "title": "这个问题我答不了"
    },
-   "rule": "规则=summary(两类目合并求和,数字对但答非所问);LLM 必须 unsupportable",
+   "rule": "规则=cross_group(v17 确定性拒答,同组≥2筛值+比较句式;不再合并求和)",
    "pre": [],
    "note": "核心危险用例(任务背景失分场景同型)",
    "pass": true,
    "card_type": "error",
    "ir": null,
-   "llm_used": true,
+   "llm_used": false,
    "failures": [],
    "transport": null,
    "pre_cards": [],
@@ -1955,13 +1969,13 @@
     "status": "error",
     "title": "这个问题我答不了"
    },
-   "rule": "规则=summary(合并筛选);LLM 必须 unsupportable",
+   "rule": "规则=cross_group(v17 确定性拒答;规则模式也不再给出合并筛选的错误答案)",
    "pre": [],
    "note": "",
    "pass": true,
    "card_type": "error",
    "ir": null,
-   "llm_used": true,
+   "llm_used": false,
    "failures": [],
    "transport": null,
    "pre_cards": [],
@@ -2446,12 +2460,12 @@
      "channel": [],
      "user_type": []
     },
-    "granularity": "day",
+    "granularity": "none",
     "compare": "prev_period",
     "order": "desc",
     "limit": 10
    },
-   "llm_used": false,
+   "llm_used": true,
    "failures": [],
    "transport": null,
    "pre_cards": [],
@@ -2576,7 +2590,7 @@
      "channel": [],
      "user_type": []
     },
-    "granularity": "day",
+    "granularity": "none",
     "compare": "prev_period",
     "order": "desc",
     "limit": 10
@@ -2588,6 +2602,63 @@
     "summary"
    ],
    "done_status": "ok"
+  },
+  {
+   "id": "C01",
+   "group": "⑫覆盖窗口",
+   "q": "今年以来GMV是多少?",
+   "expect": {
+    "card": "summary",
+    "metric": "gmv"
+   },
+   "rule": "规则=YTD range(2026-01-01起)→ 覆盖窗口防线截断到数据起始并注明(数字=90天合计)",
+   "pre": [],
+   "note": "v17 部分越界:卡含「已按 数据起始~水位 统计」注明,不再无声冒充全年口径",
+   "pass": true,
+   "card_type": "summary",
+   "ir": {
+    "metric": "gmv",
+    "time": {
+     "range": [
+      "2026-08-09",
+      "2026-11-06"
+     ]
+    },
+    "dims": [],
+    "filters": {
+     "category": [],
+     "channel": [],
+     "user_type": []
+    },
+    "granularity": "none",
+    "compare": "none",
+    "order": "desc",
+    "limit": 10
+   },
+   "llm_used": true,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "ok"
+  },
+  {
+   "id": "C02",
+   "group": "⑫覆盖窗口",
+   "q": "从2025-01-01到2025-06-30的GMV是多少?",
+   "expect": {
+    "card": "error"
+   },
+   "rule": "规则=from_to range 整体早于数据起始 → 确定性拒答,理由引用真实覆盖窗口",
+   "pre": [],
+   "note": "v17 整体越界:拒答理由是系统的「数据仅覆盖 起始~水位」事实,非 LLM 措辞",
+   "pass": true,
+   "card_type": "error",
+   "ir": null,
+   "llm_used": false,
+   "failures": [],
+   "transport": null,
+   "pre_cards": [],
+   "done_status": "error"
   }
  ]
 }

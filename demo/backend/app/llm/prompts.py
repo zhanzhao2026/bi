@@ -4,12 +4,13 @@
 (models/metrics/dims/terms),prompt 文本不再内联在 gateway.py;词是数据,渲染逻辑在此。
 
 §17 planner 加固:
-- 注入时间上下文(今天 / 数据截至 data_as_of),要求「先查后答」;
+- 注入时间上下文(今天 / 数据覆盖窗口 data_start~data_as_of),要求「先查后答」;
 - 时间铁律(显式时间词必须完整映射进 IR.time,禁止降级为 this_month/last_30d)、
   排名铁律(dims+order+limit,禁止把候选值塞进 filters)、诚实铁律(不可表达 →
-  {"unsupportable": 原因},模糊问法 → {"clarify": true},问候/身份类对话 → {"meta": true});
-- 10 组 few-shot 覆盖:显式年月/排名/TOP N 下钻/筛值/相邻比较/跨类目对比拒答/
-  无指标拒答/澄清/新老客对比/趋势,全部由语义层对象 + data_as_of 动态渲染。
+  {"unsupportable": 原因},模糊问法 → {"clarify": true},问候/身份/能力/数据范围类
+  对话 → {"meta": true});
+- few-shot 覆盖:显式年月/排名/TOP N 下钻/筛值/相邻比较/跨类目对比拒答/
+  无指标拒答/澄清/新老客对比/趋势/闲聊 meta,全部由语义层对象 + data_as_of 动态渲染。
 """
 import datetime as dt
 import re
@@ -50,6 +51,19 @@ def _asof_date() -> dt.date:
     from ..semantic import timelex
 
     return timelex.DEFAULT_ASOF
+
+
+def _data_start_date() -> dt.date | None:
+    """数据起始日(v17 覆盖窗口防线):MIN(pay_date);不可用时返回 None。"""
+    try:
+        from ..semantic.loader import get_data_start
+
+        v = get_data_start()
+        if v:
+            return dt.date.fromisoformat(str(v)[:10])
+    except Exception:
+        pass
+    return None
 
 
 def _culture_example(asof: dt.date) -> tuple[str, str] | None:
@@ -182,6 +196,12 @@ def _few_shots(asof: dt.date) -> list[tuple[str, str, str]]:
          '{"meta": true}',
          "与经营数据无关的身份询问 → meta,不要编 IR、不要 clarify;"
          "「你好」「你能做什么」等同理;带数据意图的问候(你好,最近GMV怎么样)是问数"),
+        # r. 能力/数据范围询问 → meta(系统介绍卡给出覆盖窗口与能力清单)
+        ("能查到什么范围",
+         '{"meta": true}',
+         "询问系统能查的数据范围/能力 → meta,绝不要把「范围」「查」当成数据意图"
+         "凭空编一个指标 IR;「你们有哪些数据」「能查多久的数据」同理,"
+         "系统的自我介绍卡会给出数据覆盖窗口与能力清单"),
     ]
 
 
@@ -202,6 +222,10 @@ def render_planner_system(sem: "Semantic", options: dict | None = None,
     lines.append("【当前时间上下文】")
     lines.append(f"- 今天 = {today.isoformat()}")
     lines.append(f"- 数据截至 = {asof.isoformat()}(数据只更新到该日,更晚的日期查不到数据)")
+    dstart = _data_start_date()
+    if dstart:
+        lines.append(f"- 数据覆盖 = {dstart.isoformat()} ~ {asof.isoformat()}"
+                     f"(共 {(asof - dstart).days + 1} 天);早于 {dstart.isoformat()} 的时间段没有数据")
     lines.append("- 先查后答:输出前先逐词自检——问题中的时间词是否都完整进了 IR.time、"
                  "range 里的每个日期是否都不晚于数据截至日、指标是否在下方清单里、"
                  "筛选值是否真实存在;自检不过就改 IR 或诚实拒答,绝不猜。")
@@ -298,6 +322,16 @@ def render_planner_system(sem: "Semantic", options: dict | None = None,
     lines.append("2. 预测/预估类问题:未来数据不存在;")
     lines.append("3. 语义层没有的指标(利润/成本/流量等)或范围(竞品数据、非本系统数据);")
     lines.append("4. 需要逐单明细、用户名单的诉求。")
+    dstart = _data_start_date()
+    if dstart:
+        cov_txt = f"数据仅覆盖 {dstart.isoformat()}~{asof.isoformat()}"
+        lines.append(f"5. 时间范围整体早于数据起始日({dstart.isoformat()}):该时间段没有数据,"
+                     f"原因必须写「{cov_txt}」的口径。")
+        lines.append(f"覆盖窗口处理:部分超出覆盖窗口(如最近一年/今年以来)→ IR 照常输出"
+                     "用户问的完整 range,系统会自动截断到覆盖窗口并向用户注明,不要自行改写窗口。")
+    lines.append("拒答原因必须基于系统给出的事实(数据覆盖窗口/可用指标清单),"
+                 "涉及时间范围时引用「数据仅覆盖 起始~截至」的真实口径,"
+                 "不得编造与事实不符的说法(如把早于数据起始日说成「超出数据截至日」)。")
     lines.append("拒答不是失败,给错数字才是失败。")
     lines.append("")
     lines.append("【澄清逃生】")
@@ -310,11 +344,14 @@ def render_planner_system(sem: "Semantic", options: dict | None = None,
                  "绝不要对裸追问输出 clarify,选时间范围也答不了没有对象的问题。")
     lines.append("")
     lines.append("【闲聊逃生】")
-    lines.append("与经营数据完全无关的对话——问候(你好)、询问你的身份/能力(你是谁/"
-                 "你能做什么/介绍一下自己)、感谢与寒暄——输出 {\"meta\": true},"
-                 "由系统给出固定的自我介绍,不要输出 IR,也不要 clarify/unsupportable。")
+    lines.append("与经营数据完全无关的对话——问候(你好)、询问你的身份/能力/数据范围(你是谁/"
+                 "你能做什么/能查到什么范围/你们有哪些数据/能查多久的数据)、感谢与寒暄——"
+                 "输出 {\"meta\": true},由系统给出固定的自我介绍(含数据覆盖窗口),"
+                 "不要输出 IR,也不要 clarify/unsupportable。")
     lines.append("判定标准:问题里找不到任何可回答的数据意图时,先考虑 meta,再考虑 clarify;"
-                 "只要包含任何指标/维度/时间意图就不是 meta(如「你好,最近GMV怎么样」是问数)。")
+                 "只要包含任何指标/维度/时间意图就不是 meta(如「你好,最近GMV怎么样」是问数);"
+                 "能力/数据范围询问即使出现「查」「数据」「范围」等词,问的是系统能力"
+                 "而非要一个具体数字,仍然是 meta。")
     lines.append("")
 
     # 术语/守卫规则(词表来自 terms.yml;守卫在 planner 之前执行,这里告知 LLM 不要为其生成 IR)
@@ -377,5 +414,9 @@ def render_narrator_system(sem: "Semantic | None" = None) -> str:
         )
         lines.append(f"指标口径速查: {glossary}")
     lines.append("硬性要求:1) 禁止编造数字,所有数字必须与输入完全一致(原样引用);")
-    lines.append("2) 不出现 SQL/IR/接口等技术词;3) 每句一行,直接给句子,不要编号。")
+    lines.append("2) 不出现 SQL/IR/接口等技术词;3) 每句一行,直接给句子,不要编号;")
+    lines.append("4) 只陈述输入里有的内容:输入没有上一期/对比数据时,绝不要出现"
+                 "「较上一期」「环比」「与上期相比」等对比表述——写「较上一期无数据」"
+                 "同样是编造(那不是输入里的事实);只有输入带了对比数据才写对比句,"
+                 "数字同样原样引用。")
     return "\n".join(lines)
