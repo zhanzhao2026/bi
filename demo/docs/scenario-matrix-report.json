@@ -1,5 +1,5 @@
 {
- "ran_at": "2026-11-08 13:43:38",
+ "ran_at": "2026-11-08 15:01:22",
  "base": "http://127.0.0.1:8310",
  "asof": "2026-11-06",
  "summary": {
@@ -219,7 +219,7 @@
     "order": "desc",
     "limit": 10
    },
-   "llm_used": true,
+   "llm_used": false,
    "failures": [],
    "transport": null,
    "pre_cards": [],
@@ -487,14 +487,7 @@
      "range": [
       "2026-10-21",
       "2026-10-31"
-     ],
-     "compare": {
-      "type": "range",
-      "range": [
-       "2026-10-01",
-       "2026-10-20"
-      ]
-     }
+     ]
     },
     "dims": [],
     "filters": {
@@ -1457,10 +1450,7 @@
     "filters": {
      "category": [],
      "channel": [
-      "付费推广",
-      "自然流量",
-      "私域",
-      "直播"
+      "付费推广"
      ],
      "user_type": []
     },
@@ -2171,7 +2161,7 @@
      "channel": [],
      "user_type": []
     },
-    "granularity": "none",
+    "granularity": "day",
     "compare": "prev_period",
     "order": "desc",
     "limit": 10
@@ -2203,9 +2193,7 @@
     "time": {
      "preset": "last_30d"
     },
-    "dims": [
-     "date"
-    ],
+    "dims": [],
     "filters": {
      "category": [],
      "channel": [],
@@ -2213,7 +2201,7 @@
     },
     "granularity": "day",
     "compare": "prev_period",
-    "order": "asc",
+    "order": "desc",
     "limit": 10
    },
    "llm_used": true,
@@ -2292,8 +2280,8 @@
     },
     "granularity": "none",
     "compare": "prev_period",
-    "limit": 10,
-    "order": "desc"
+    "order": "desc",
+    "limit": 10
    },
    "llm_used": true,
    "failures": [],
@@ -2327,9 +2315,7 @@
     "time": {
      "preset": "last_30d"
     },
-    "dims": [
-     "category"
-    ],
+    "dims": [],
     "filters": {
      "category": [
       "美妆"
@@ -2337,7 +2323,7 @@
      "channel": [],
      "user_type": []
     },
-    "granularity": "none",
+    "granularity": "day",
     "compare": "prev_period",
     "order": "desc",
     "limit": 10
@@ -2378,9 +2364,9 @@
      "channel": [],
      "user_type": []
     },
-    "granularity": "none",
+    "granularity": "day",
     "compare": "prev_period",
-    "order": "asc",
+    "order": "desc",
     "limit": 10
    },
    "llm_used": true,
@@ -2419,7 +2405,7 @@
      "channel": [],
      "user_type": []
     },
-    "granularity": "none",
+    "granularity": "day",
     "compare": "prev_period",
     "order": "desc",
     "limit": 10
@@ -2465,7 +2451,7 @@
     "order": "desc",
     "limit": 10
    },
-   "llm_used": true,
+   "llm_used": false,
    "failures": [],
    "transport": null,
    "pre_cards": [],
@@ -2590,7 +2576,7 @@
      "channel": [],
      "user_type": []
     },
-    "granularity": "none",
+    "granularity": "day",
     "compare": "prev_period",
     "order": "desc",
     "limit": 10

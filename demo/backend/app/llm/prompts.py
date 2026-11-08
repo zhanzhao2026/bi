@@ -7,11 +7,12 @@
 - 注入时间上下文(今天 / 数据截至 data_as_of),要求「先查后答」;
 - 时间铁律(显式时间词必须完整映射进 IR.time,禁止降级为 this_month/last_30d)、
   排名铁律(dims+order+limit,禁止把候选值塞进 filters)、诚实铁律(不可表达 →
-  {"unsupportable": 原因},模糊问法 → {"clarify": true});
+  {"unsupportable": 原因},模糊问法 → {"clarify": true},问候/身份类对话 → {"meta": true});
 - 10 组 few-shot 覆盖:显式年月/排名/TOP N 下钻/筛值/相邻比较/跨类目对比拒答/
   无指标拒答/澄清/新老客对比/趋势,全部由语义层对象 + data_as_of 动态渲染。
 """
 import datetime as dt
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # 仅为类型标注,避免运行时循环依赖
@@ -176,6 +177,11 @@ def _few_shots(asof: dt.date) -> list[tuple[str, str, str]]:
          "问「是多少/有多少」且无排名/走势词 → 汇总问数,dims 留空;"
          "「美妆」是筛选进 filters.category;擅自加 dims 会把问数变成排名,"
          "答案形态就错了(任意指标同理)"),
+        # p. 闲聊逃生:问候/身份/能力询问 → meta(系统给固定自我介绍)
+        ("你是谁?",
+         '{"meta": true}',
+         "与经营数据无关的身份询问 → meta,不要编 IR、不要 clarify;"
+         "「你好」「你能做什么」等同理;带数据意图的问候(你好,最近GMV怎么样)是问数"),
     ]
 
 
@@ -209,9 +215,21 @@ def render_planner_system(sem: "Semantic", options: dict | None = None,
             header = (f"可用指标(按问题检索出最相关的 {len(metric_items)}/{len(sem.metrics)} 个,"
                       "格式: key(名称, 单位[, 比率]) — 口径说明):")
     lines.append(header)
+    # 指标同义词(词是数据:terms.yml synonyms.metric_patterns → 按指标归并展示,
+    # 只展示纯词形条目,过滤正则元字符写法)
+    alias_map: dict[str, list[str]] = {}
+    for pat_item in ((sem.terms or {}).get("synonyms") or {}).get("metric_patterns") or []:
+        mkey = str(pat_item.get("metric") or "")
+        for tok in str(pat_item.get("pattern") or "").split("|"):
+            tok = tok.strip()
+            if tok and mkey and re.fullmatch(r"[\u4e00-\u9fa5A-Za-z0-9]+", tok):
+                alias_map.setdefault(mkey, []).append(tok)
     for k, m in metric_items:
         ratio = ", 比率" if m.get("ratio") else ""
-        lines.append(f"- {k}({m.get('name', '')}, {m.get('unit', '')}{ratio}): {m.get('plain', '')}")
+        aliases = alias_map.get(k) or []
+        alias_txt = f"〔别名: {'、'.join(dict.fromkeys(aliases))}〕" if aliases else ""
+        lines.append(f"- {k}({m.get('name', '')}, {m.get('unit', '')}{ratio}): "
+                     f"{m.get('plain', '')}{alias_txt}")
     lines.append("")
     dim_parts = []
     for d, cfg in (sem.dims or {}).items():
@@ -283,10 +301,20 @@ def render_planner_system(sem: "Semantic", options: dict | None = None,
     lines.append("拒答不是失败,给错数字才是失败。")
     lines.append("")
     lines.append("【澄清逃生】")
-    lines.append("问题指代不明、无法定位到任何指标与维度(且不在下方术语规则覆盖内)时,"
-                 "输出 {\"clarify\": true} 请求用户澄清,不要猜。")
+    lines.append("clarify 只用于「用户补一句话就能回答」的场景(如指标词模糊但系统未拦截)。")
     lines.append("注意:指标词明确不在可用指标清单里(利润/成本/流量等)不属于模糊,"
                  "不要 clarify,直接输出 unsupportable(语义层暂无该指标)。")
+    lines.append("**裸追问**(只有「为什么」「怎么样」等、没有指标词):若会话上下文里有"
+                 "上一轮数据问题,按【多轮继承】输出继承的 IR(系统会升级为归因分析);"
+                 "若没有任何可继承的上下文,输出 unsupportable(原因:缺少分析对象)——"
+                 "绝不要对裸追问输出 clarify,选时间范围也答不了没有对象的问题。")
+    lines.append("")
+    lines.append("【闲聊逃生】")
+    lines.append("与经营数据完全无关的对话——问候(你好)、询问你的身份/能力(你是谁/"
+                 "你能做什么/介绍一下自己)、感谢与寒暄——输出 {\"meta\": true},"
+                 "由系统给出固定的自我介绍,不要输出 IR,也不要 clarify/unsupportable。")
+    lines.append("判定标准:问题里找不到任何可回答的数据意图时,先考虑 meta,再考虑 clarify;"
+                 "只要包含任何指标/维度/时间意图就不是 meta(如「你好,最近GMV怎么样」是问数)。")
     lines.append("")
 
     # 术语/守卫规则(词表来自 terms.yml;守卫在 planner 之前执行,这里告知 LLM 不要为其生成 IR)
@@ -318,8 +346,9 @@ def render_planner_system(sem: "Semantic", options: dict | None = None,
 
     # ---- 会话继承 ----
     lines.append("【多轮继承】用户消息里的「会话上下文」给出上一轮的 time/filters/metric;"
-                 "「那…呢」「…呢」这类追问沿用上一轮的 time 与 filters,只把 metric 换成本次"
-                 "问到的指标;只有追问里出现了新的时间词/筛选词才覆盖对应字段。")
+                 "「那…呢」「…呢」「为什么」这类追问沿用上一轮的 time 与 filters,"
+                 "只把 metric 换成本次问到的指标(追问没提新指标时沿用上一轮 metric);"
+                 "只有追问里出现了新的时间词/筛选词才覆盖对应字段。")
     lines.append("")
 
     schema = _IR_SCHEMA_TMPL.format(presets="|".join(sem.time_presets))
@@ -330,7 +359,8 @@ def render_planner_system(sem: "Semantic", options: dict | None = None,
     )
     lines.append("【输出约束(收尾)】")
     lines.append("- 只输出一个 JSON 对象:要么完整 IR,要么 {\"unsupportable\": \"原因\"},"
-                 "要么 {\"clarify\": true};IR 之外的一切输出(解释/思考过程/markdown 代码块)都禁止。")
+                 "要么 {\"clarify\": true},要么 {\"meta\": true};"
+                 "IR 之外的一切输出(解释/思考过程/markdown 代码块)都禁止。")
     lines.append("- 数字禁止出现在 planner 输出里:除 time.range / compare.range 中的日期和 limit"
                  " 条数外,不得出现任何统计数值、金额或百分比。")
     return "\n".join(lines)

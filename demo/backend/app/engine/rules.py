@@ -84,6 +84,15 @@ COMPARE_METRICS = {"order_cnt", "gmv", "arppu", "pay_user_cnt", "item_cnt",
                    "new_order_ratio", "refund_rate", "refund_amt", "refund_order_rate"}
 
 
+def has_why_word(question: str) -> bool:
+    """问题是否含「为什么」类追问词(含裸追问「为什么」)。
+
+    供编排层把追问升级为归因卡使用——不要求规则 parse 成功(裸「为什么」
+    无指标词,parse 会失败,但结合会话继承仍可升级归因)。
+    """
+    return bool(WHY_RE.search(question or ""))
+
+
 def month_range(year: int, month: int) -> list[str]:
     """自然月闭区间(委托 timelex,保持既有函数可用)。"""
     return timelex.month_range(year, month)

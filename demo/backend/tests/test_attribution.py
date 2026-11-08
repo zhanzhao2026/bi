@@ -287,5 +287,83 @@ class TestAnalysisCardsE2E(unittest.TestCase):
         self.assertEqual("ok", d2.get("status"))
 
 
+class TestMetaEscapeE2E(unittest.TestCase):
+    """逃生口3(§17):LLM 判定问候/身份类 → 确定性自我介绍卡(不依赖具体问法词表)。"""
+
+    def test_meta_escape_card(self):
+        from app.engine.orchestrator import Orchestrator
+        orch = Orchestrator()
+        orch.gateway.enabled = lambda: True
+        orch.gateway.plan_ir = lambda *a, **k: {"meta": True}
+        card, _raw, done = orch.run_once("你是谁", "ceo")
+        self.assertEqual("summary", card.get("type"))
+        self.assertIn("经营分析助手", card.get("title") or "")
+        self.assertTrue(card.get("narrative"))
+        self.assertEqual("ok", done.get("status"))
+        # 自我介绍卡不含任何数据元素(kpis 空、无 chart/table),followups 为示例问法
+        self.assertEqual([], card.get("kpis"))
+        self.assertIsNone(card.get("chart"))
+        self.assertIsNone(card.get("table"))
+        self.assertEqual(3, len(card.get("followups") or []))
+        # 审计 intent 落卡型 summary(曾写死 "error" → 审计里 状态ok/指标error 假不一致)
+        row = exec_sql("SELECT intent, status FROM audit_log WHERE trace_id = %s",
+                       [card.get("trace_id")])
+        self.assertTrue(row, "审计应写入该 trace")
+        self.assertEqual("summary", row[0]["intent"], "meta 卡审计 intent 应为卡型 summary")
+        self.assertEqual("ok", row[0]["status"])
+
+    def test_clarify_card_template_scoping(self):
+        """「销售额→GMV」假设话术只属于守卫 vague 路径;LLM 澄清逃生为中性话术。"""
+        from app.engine.orchestrator import Orchestrator
+        orch = Orchestrator()
+        neutral = orch._clarify_card("tr_test")
+        self.assertNotIn("销售额", " ".join(neutral.get("narrative") or []),
+                         "中性澄清卡不应出现「销售额」假设")
+        self.assertIsNone(neutral.get("assume_note"))
+        vague = orch._clarify_card("tr_test", vague_word="业绩")
+        self.assertIn("业绩", " ".join(vague.get("narrative") or []))
+        self.assertIn("业绩", vague.get("assume_note") or "")
+
+    def test_bare_why_with_prev_ir_inherits(self):
+        """裸「为什么」+ 有上一轮数据问题 → 确定性继承并升级归因
+        (即使 LLM 对追问误判 clarify,也不放走去出时间选项)。"""
+        from app.engine.orchestrator import Orchestrator
+        orch = Orchestrator()
+        sid = f"t-{uuid.uuid4().hex[:8]}"
+        orch.gateway.enabled = lambda: True
+        orch.gateway.narrate = lambda payload: None   # 叙述留规则模式,保持测试封闭
+        calls = {"n": 0}
+
+        def plan_ir(question, *a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"metric": "gmv", "time": {"preset": "last_30d"}, "dims": [],
+                        "filters": {"category": ["美妆"], "channel": [], "user_type": []},
+                        "granularity": "none", "compare": "none", "order": "desc",
+                        "limit": 10}
+            return {"clarify": True}   # 模拟 LLM 对裸追问误判 clarify
+
+        orch.gateway.plan_ir = plan_ir
+        c1, _r1, d1 = orch.run_once("最近30天美妆的GMV是多少", "ceo", session_id=sid)
+        self.assertEqual("summary", c1.get("type"))
+        self.assertEqual("ok", d1.get("status"))
+        c2, _r2, d2 = orch.run_once("为什么", "ceo", session_id=sid)
+        self.assertEqual("attribution", c2.get("type"), "裸「为什么」应继承上一轮升级归因")
+        self.assertTrue(any("美妆" in s for s in (c2.get("narrative") or [])))
+        self.assertEqual("ok", d2.get("status"))
+
+    def test_bare_why_without_context_refuses(self):
+        """裸「为什么」+ 无任何可继承上下文(LLM 误判 clarify)→ 诚实拒答,
+        不出「选时间范围」的澄清卡——没有分析对象,选时间也答不了。"""
+        from app.engine.orchestrator import Orchestrator
+        orch = Orchestrator()
+        orch.gateway.enabled = lambda: True
+        orch.gateway.plan_ir = lambda *a, **k: {"clarify": True}
+        card, _raw, done = orch.run_once("为什么", "ceo")
+        self.assertEqual("error", card.get("type"))
+        self.assertIn("缺少分析对象", " ".join(card.get("narrative") or []))
+        self.assertEqual("error", done.get("status"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -126,7 +126,7 @@ class Orchestrator:
             card = self._boundary_card(trace_id)
             status = "boundary"
         elif guard_kind == "clarify" and not assume:
-            card = self._clarify_card(trace_id)
+            card = self._clarify_card(trace_id, vague_word=_gword)
             status = "clarify"
 
         if card is not None:  # 守卫卡/错误卡:无需查询数据,四步动画快速走完
@@ -156,7 +156,7 @@ class Orchestrator:
             timings["narrate"] = 0
             self._audit(trace_id, session_id, user["id"], question, card.get("type"),
                         None, None, 0, card, card.get("narrative") or [],
-                        False, None, t0, timings, status)
+                        llm_used, llm_model, t0, timings, status)
             yield ("answer", card)
             yield ("done", {"session_id": session_id, "trace_id": trace_id,
                             "latency_ms": _ms(t0), "status": status})
@@ -199,15 +199,41 @@ class Orchestrator:
                             llm_used = True
                             llm_model = self.gateway.get_config().get("model")
                     elif isinstance(llm_ir, dict) and llm_ir.get("clarify"):
-                        # 逃生口2(§17):LLM 判定问法模糊 → 复用 clarify 卡(时间选项+assume_note)
+                        # 逃生口2(§17):LLM 判定问法模糊。clarify 只用于「补上就能答」
+                        # 的场景;裸追问(「为什么」)按上下文确定性处理:
+                        #   有可继承的上一轮数据问题 → 直接继承 IR(随后升级归因);
+                        #   无任何分析对象 → 诚实拒答(选时间也答不了,不该出时间选项)
                         if rules_attr:
                             logger.info("llm clarify ignored: rules attribution intent wins")
                         else:
-                            card = self._clarify_card(trace_id)
-                            status = "clarify"
-                            ir = None
-                            llm_used = True
-                            llm_model = self.gateway.get_config().get("model")
+                            prev_ir = (session_ctx or {}).get("ir") if session_ctx else None
+                            if (rules.has_why_word(question) and prev_ir
+                                    and prev_ir.get("metric") in attribution.ATTR_KEYS):
+                                ir = dict(prev_ir)
+                                source = "rule"
+                            elif not parsed.get("ok") and not prev_ir:
+                                card = self._unsupportable_card(
+                                    trace_id,
+                                    "这个问题缺少分析对象——请告诉我想分析哪个指标,"
+                                    "例如:最近30天退款率为什么上升。")
+                                status = "error"
+                                ir = None
+                                llm_used = True
+                                llm_model = self.gateway.get_config().get("model")
+                            else:
+                                card = self._clarify_card(trace_id)
+                                status = "clarify"
+                                ir = None
+                                llm_used = True
+                                llm_model = self.gateway.get_config().get("model")
+                    elif isinstance(llm_ir, dict) and llm_ir.get("meta"):
+                        # 逃生口3(§17):问候/身份/能力类对话(「你是谁」「你能做什么」)
+                        # → 确定性自我介绍卡(内容固定、无数字,不经 LLM 叙述,零幻觉)
+                        card = self._meta_card(trace_id)
+                        status = "ok"
+                        ir = None
+                        llm_used = True
+                        llm_model = self.gateway.get_config().get("model")
                     elif llm_ir is not None:
                         cand = compiler.normalize_ir(llm_ir)
                         ok, err = compiler.validate_ir(cand, self.semantic, options)
@@ -261,6 +287,7 @@ class Orchestrator:
             clarify_note = bool((card or {}).get("assume_note"))
             yield ("stage", {"step": "understand", "label": "理解问题", "status": "done",
                              "detail": ("该问题暂无法映射到现有指标" if status == "error"
+                                        else "已识别为问候/自我介绍" if (card or {}).get("type") == "summary"
                                         else "需要先确认时间范围" if clarify_note
                                         else "需要先确认分析维度")})
             yield ("stage", {"step": "query", "label": "查询数据", "status": "start",
@@ -275,7 +302,9 @@ class Orchestrator:
                              "detail": "正在生成回答"})
             yield ("stage", {"step": "narrate", "label": "生成分析", "status": "done",
                              "detail": "回答已生成"})
-            self._audit(trace_id, session_id, user["id"], question, "error",
+            # intent 落卡型(此前写死 "error":自我介绍卡明明回答成功,审计却标 error,
+            # 造成「状态 ok / 指标 error」的假不一致)
+            self._audit(trace_id, session_id, user["id"], question, card.get("type"),
                         ir, None, 0, card, card.get("narrative") or [],
                         llm_used, llm_model, t0, timings, status)
             yield ("answer", card)
@@ -304,8 +333,10 @@ class Orchestrator:
                 ir["metric"] = parsed["metric"]
             pair = parsed.get("time_pair")
             if pair:
-                # 「X比Y」对比窗口由规则 timelex 确定性解析(§16.1),任何卡型下
-                # 都以规则为准,LLM IR 不得丢失或改写对比区间
+                # 「X比Y/对比」两期窗口由规则 timelex 确定性解析(§16.1/v16),
+                # 主窗口与对比窗口都以规则为准,LLM IR 不得丢失或改写
+                # (如「2026-11-05的gmv对比2026-11-04」的裸 ISO 日期)
+                ir["time"] = {"range": list(pair["main"])}
                 ir["compare"] = {"type": "range", "range": list(pair["compare"]),
                                  "label": str(pair.get("compare_label") or "")}
             elif parsed.get("card") == "attribution" or parsed.get("delta_dir"):
@@ -331,9 +362,11 @@ class Orchestrator:
         # (修复「哪个类目最高/前N」被降级成整体汇总的语义漂移;规则模式不受影响,
         #  compare/attribution/overview 等规则意图仍以规则为准 —— IR 无法表达这些卡)
         # doc 04 §5:「为什么」追问继承主题升级 M5 归因 —— 显式指标问法已在规则层
-        # 直判,这里只兜「那为什么…呢」这类无指标追问(继承上一轮指标后升级)。
+        # 直判,这里兜「那为什么…呢」「为什么」这类追问(继承上一轮指标后升级)。
+        # 用 has_why_word 而非 parsed.why_attr:裸「为什么」规则 parse 失败(ok=False),
+        # 但只要 LLM IR 继承到了可归因指标,追问升级依然成立。
         # 升级优先于 LLM dims 重推:追问的意图是归因,LLM 自加的 date 维不改变意图。
-        if (parsed.get("ok") and parsed.get("why_attr") and card_kind == "summary"
+        if (rules.has_why_word(question) and card_kind == "summary"
                 and not parsed.get("vague")
                 and (parsed.get("domain") or "") not in ("overview", "refund", "compare")
                 and ir.get("metric") in attribution.ATTR_KEYS):
@@ -1435,15 +1468,35 @@ class Orchestrator:
         c["followups"] = ["各类目GMV排名", "各渠道销售情况", "新老客对比"]
         return c
 
-    def _clarify_card(self, trace_id: str) -> dict:
+    def _clarify_card(self, trace_id: str, vague_word: str | None = None) -> dict:
+        """澄清卡:vague_word=守卫命中的模糊指标词(挂「按 GMV 理解」假设话术);
+        None=LLM 判定问法模糊(逃生口)→ 中性话术,不挂任何指标假设。"""
         c = self._base_card("clarify", trace_id, "想先确认一下时间范围")
         c["options"] = guards.CLARIFY_OPTIONS
-        c["assume_note"] = "未指定时我会按 GMV 理解「销售额」"
-        c["narrative"] = [
-            "「销售额」我默认按 GMV(用户付款总金额)理解。",
-            "请选择想看的时间范围,或直接告诉我。",
-        ]
+        if vague_word:
+            c["assume_note"] = f"未指定时我会按 GMV 理解「{vague_word}」"
+            c["narrative"] = [
+                f"「{vague_word}」我默认按 GMV(用户付款总金额)理解。",
+                "请选择想看的时间范围,或直接告诉我。",
+            ]
+        else:
+            c["narrative"] = [
+                "这个问题我还无法定位到具体指标,先和您确认一下。",
+                "您可以问得具体一点,例如:最近30天GMV是多少、近30天退款率为什么上升。",
+            ]
         c["followups"] = []
+        return c
+
+    def _meta_card(self, trace_id: str) -> dict:
+        """身份/问候类问题(「你是谁」「你好」)→ 自我介绍卡(规则确定性,不走 LLM)。"""
+        c = self._base_card("summary", trace_id, "我是 BizInsight 经营分析助手")
+        c["narrative"] = [
+            "我负责回答交易域的经营数据问题:GMV、订单数、支付人数、客单价、支付件数、退款金额/退款率、新客占比等。",
+            "支持时间(最近N天/周/月/旬)、类目/渠道/新老客筛选,以及趋势、排名、两期变化排名与归因分析;每个数字都来自数仓实际查询并经过核验。",
+            "薪酬等敏感信息、订单明细、语义层没有的指标,我会坦诚拒答而不是编一个数。",
+        ]
+        c["followups"] = ["最近30天的整体经营情况", "近30天退款率为什么上升",
+                          "哪些类目GMV下降最明显"]
         return c
 
     def _clarify_dims_card(self, trace_id: str) -> dict:

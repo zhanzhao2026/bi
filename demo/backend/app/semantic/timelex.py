@@ -49,6 +49,7 @@ _DATE_TOKEN = (
     r"|\d{1,2}\s*月\s*\d{1,2}\s*日"
 )
 FROM_TO_RE = re.compile(rf"从\s*({_DATE_TOKEN})\s*(?:到|至|—|~)\s*({_DATE_TOKEN})")
+SINGLE_DATE_RE = re.compile(rf"(?<!\d)({_DATE_TOKEN})(?!\d)")
 
 # 新增简单表达式
 QIANTIAN_RE = re.compile(r"前天")
@@ -59,6 +60,9 @@ RECENT_N_WEEK_RE = re.compile(r"(?:最近|近|过去)\s*(\d{1,2})\s*周")
 
 # 「X比Y」相邻比较:排除 对比/比较/环比/同比/相比(比 前一字为 对/较/环/同/相)
 PAIR_CMP_RE = re.compile(r"(?<![对较环同相])比")
+# 「A对比B」显式对比词(v16):两侧均须解析出具体时间短语才算对比问法
+# (在 _parse_pair 中与 PAIR_CMP_RE 的命中位合并,防止既有短语误配)
+PAIR_DUIBI_RE = re.compile(r"对比")
 PREV_N_FULL_RE = re.compile(r"上一个?\s*\d{1,3}\s*天|前一个\s*\d{1,3}\s*天")
 
 # 单个时间短语(供「比」两侧提取;长形式在前)
@@ -67,7 +71,9 @@ TIME_EXPR_RE = re.compile(
     r"上一个?\s*\d{1,3}\s*天"
     r"|(?:最近|近|过去)\s*\d{1,3}\s*天"
     r"|(?:最近|近|过去)\s*\d{1,2}\s*周"
+    r"|(?<!\d)\d{4}\s*[-/]\s*\d{1,2}\s*[-/]\s*\d{1,2}日?(?!\d)"
     r"|\d{4}\s*年\s*\d{1,2}\s*月(?:上旬|中旬|下旬)?"
+    r"|\d{1,2}\s*月\s*\d{1,2}\s*日?"
     r"|\d{1,2}\s*月(?:上旬|中旬|下旬)?"
     r"|" + _T_REL + r"(?:上旬|中旬|下旬)?"
     r"|上旬|中旬|下旬"
@@ -263,6 +269,21 @@ def _resolve_expr(text: str, asof: dt.date, month_ctx=None):
         return [dt.date(asof.year, asof.month, 1).isoformat(), asof.isoformat()]
     if re.fullmatch(r"今年以来|年初至今|今年", t):
         return [dt.date(asof.year, 1, 1).isoformat(), asof.isoformat()]
+    # ISO 日期(2026-11-05 / 2026/11/5)与「11月5日」:单日闭区间(v16)
+    m = re.fullmatch(r"(\d{4})\s*[-/]\s*(\d{1,2})\s*[-/]\s*(\d{1,2})日?", t)
+    if m:
+        try:
+            d = dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+        return [d.isoformat(), d.isoformat()]
+    m = re.fullmatch(r"(\d{1,2})\s*月\s*(\d{1,2})\s*日?", t)
+    if m and 1 <= int(m.group(1)) <= 12:
+        try:
+            d = dt.date(asof.year, int(m.group(1)), int(m.group(2)))
+        except ValueError:
+            return None
+        return [d.isoformat(), d.isoformat()]
     m = re.fullmatch(r"(?:最近|近|过去)\s*(\d{1,3})\s*天", t)
     if m and 1 <= int(m.group(1)) <= 365:
         n = int(m.group(1))
@@ -293,12 +314,15 @@ def _month_ctx_of(rng: list[str]):
 def _parse_pair(q: str, asof: dt.date):
     """「X比Y」相邻比较 → {main, main_label, compare, compare_label} | None。
 
+    - 连接词:「比」(PAIR_CMP_RE,排除 对比/比较/环比/同比/相比)与「对比」
+      (PAIR_DUIBI_RE,v16:两侧均须解析出具体时间短语,防泛指误配);
     - 左侧取「比」之前最后一个时间短语;右侧取「比」之后紧邻的时间短语;
     - 两侧均解析成功才算对比问法,否则回退常规解析;
     - 右侧「上一个N天」按主窗口等长平移;右侧裸旬继承主窗口月份。
     """
-    for cm in PAIR_CMP_RE.finditer(q):
-        pos = cm.start()
+    hits = list(PAIR_CMP_RE.finditer(q)) + list(PAIR_DUIBI_RE.finditer(q))
+    for cm in sorted(hits, key=lambda m: m.start()):
+        pos = cm.end() - 1                       # 「比」字符位置(两种连接词均以比收尾)
         rm = TIME_EXPR_RE.match(q[pos + 1:].lstrip())
         if not rm:
             continue
@@ -327,10 +351,18 @@ def _parse_pair(q: str, asof: dt.date):
     return None
 
 
+def _parse_single_date(q: str, asof: dt.date):
+    """单个具体日期(2026-11-05 / 2026/11/5 / 11月5日)→ 单日闭区间(v16)。"""
+    m = SINGLE_DATE_RE.search(q)
+    if not m:
+        return None
+    return _resolve_expr(m.group(1), asof)
+
+
 # ---------------- 对外入口 ----------------
 
 def parse(question, asof=None, preset_patterns=None) -> dict:
-    """中文时间短语 → IR time 结构。优先级:对比对 > 旬 > preset > 从X到Y > 月份 > 简单式。"""
+    """中文时间短语 → IR time 结构。优先级:对比对 > 旬 > preset > 从X到Y > 单日 > 月份 > 简单式。"""
     q = str(question or "")
     asof = _norm_asof(asof)
     result = dict(_EMPTY)
@@ -349,6 +381,10 @@ def parse(question, asof=None, preset_patterns=None) -> dict:
         result["preset"] = preset
         return result
     rng = _parse_from_to(q, asof)
+    if rng:
+        result["range"] = rng
+        return result
+    rng = _parse_single_date(q, asof)
     if rng:
         result["range"] = rng
         return result

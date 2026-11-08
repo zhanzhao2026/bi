@@ -217,9 +217,9 @@ def main():
     cur.execute("SELECT version, released, change_desc, yaml_snapshot IS NOT NULL AND yaml_snapshot != '' "
                 "FROM semantic_version ORDER BY version")
     vers = cur.fetchall()
-    check("semantic_version 六条(v10~v15)",
-          [int(v[0]) for v in vers] == [10, 11, 12, 13, 14, 15] and all(v[3] for v in vers),
-          "; ".join(f"v{v[0]}({v[1]})" for v in vers), "v10~v15,含 yaml_snapshot")
+    check("semantic_version 七条(v10~v16)",
+          [int(v[0]) for v in vers] == [10, 11, 12, 13, 14, 15, 16] and all(v[3] for v in vers),
+          "; ".join(f"v{v[0]}({v[1]})" for v in vers), "v10~v16,含 yaml_snapshot")
     cur.execute("SELECT skey, svalue FROM sys_settings ORDER BY skey")
     settings = {k: (v or "") for k, v in cur.fetchall()}
     ok_set = (settings.get("llm_base_url") == "https://open.bigmodel.cn/api/paas/v4"

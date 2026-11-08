@@ -361,6 +361,15 @@ backend/semantic/
   指标/筛选后将 summary 升级为 attribution(doc 04 §5「『为什么』继承主题升级 M5」)
 - LLM 逃生口守卫:规则已识别 why 问法时,LLM 的 unsupportable/clarify 不得覆盖
   (归因是确定性分析模式;U01 跨类目对比等不可表达场景不含 why 词,行为不变)
+- **逃生口3 `{"meta": true}`(v15.1)**:问候/身份/能力类对话(「你是谁」「你能做什么」)
+  由 planner 判定(open-ended 语言理解归 LLM,不做词表枚举),编排层输出**确定性
+  自我介绍卡**(type=summary,无 KPI/图表,内容固定不经 LLM 叙述,零幻觉);
+  规则兜底模式下此类问题落到 error 卡(诚实「无法理解+可回答范围」)
+- **澄清卡话术分域**:`_clarify_card(vague_word)`——守卫 vague 路径挂「按 GMV 理解
+  「{词}」」假设话术;LLM clarify 逃生用中性话术(修复「你是谁」被套销售额话术)
+- **裸追问防线(v15.1)**:clarify 只用于「补上就能答」的场景。裸追问(「为什么」):
+  有可继承的上一轮数据问题 → 确定性继承 IR 并升级归因(不信 LLM clarify);
+  无任何分析对象 → unsupportable 诚实拒答——**不出时间选项**(没有对象,选时间也答不了)
 
 ### 17.4 compare 指标感知
 - 问句指定指标(退款率/退款金额/支付件数/支付人数/订单退款率)时,compare 卡追加该
@@ -386,5 +395,17 @@ backend/semantic/
   - planner few-shot 加固:最近N天数天数 / 无拆分词不加 dims(§16.3 检索注入
     契约不变,few-shot 仅用 gmv/arppu/refund_rate)
 - 语义版本登记 v15(terms.yml intent.why/delta_rank;semantic_version 快照)
+- **v15.1 用户实测修复**(meta/澄清/审计):
+  - 逃生口3 `{"meta": true}`:问候/身份/能力类对话由 planner 判定(不做词表枚举),
+    输出确定性自我介绍卡;澄清卡话术分域(「按 GMV 理解」只属守卫 vague 路径)
+  - 裸追问(「为什么」):有上一轮数据问题 → 确定性继承升级归因;无 → 诚实拒答,
+    不出时间选项;planner 澄清逃生收窄至「补上就能答」场景
+  - 审计 intent 落实际卡型(曾写死 "error",造成「状态 ok / 指标 error」假不一致)
+- **v16 时间表达式增强**(用户实测:ISO 日期对比被答成最近30天):
+  - timelex 支持裸 ISO 日期(2026-11-05/2026/11/5)与「M月D日」单日闭区间;
+  - 「A对比B」双时间表达式对比(连接词「对比」两侧均须解析出具体时间,防泛指误配);
+  - 编排层:pair 命中时主窗口+对比窗口均由 timelex 确定性接管(LLM 不得改写)
+- **planner 提示词**:可用指标行附同义词(terms.yml metric_patterns,纯词形过滤),
+  「流水/营业额→gmv」不再依赖 LLM 猜测;新增 meta/裸追问 few-shot 与澄清收窄规则
 - 不做(数据诚实边界):M6 漏斗、M8 广告相关性(库中无流量/广告数据,fact_traffic 仅占位);
   趋势日级异常点检测(种子故事无日级拐点)

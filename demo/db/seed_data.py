@@ -427,6 +427,7 @@ def main():
         (13, "2026-11-07", "数据小组", "指标定义重构:分子指标(退款订单数/新客订单数)上提为基础指标,派生指标以 depends_on+expr 声明"),
         (14, "2026-11-07", "数据小组", "新增商品维度下钻词与时间表达式层(旬/周/相邻比较),支持类目→商品层级分析"),
         (15, "2026-11-08", "数据小组", "分析类场景扩容:归因支持退款金额/新客占比/订单退款率/GMV 等指标与两期变化贡献排名;词表新增 why/delta_rank 分析意图"),
+        (16, "2026-11-08", "数据小组", "时间表达式层增强:裸 ISO 日期(2026-11-05)与「M月D日」单日解析、「A对比B」双时间表达式对比;对比窗口由 timelex 确定性接管"),
     ]
     snapshots = {
         10: "# semantic metrics snapshot(占位快照)\nversion: 10\nmetrics:\n  gmv: {agg: 'SUM(f.pay_amount)'}\n  order_cnt: {agg: 'COUNT(DISTINCT f.order_id)'}\n  refund_amt: {agg: 'SUM(f.refund_amount)'}\n",
@@ -435,6 +436,7 @@ def main():
         13: "# semantic metrics snapshot(占位快照)\nversion: 13\nnotes: 分子指标上提为基础指标,派生指标 depends_on+expr\nmetrics:\n  refund_order_cnt: {agg: 'SUM(f.is_refund)'}\n  new_order_cnt: {agg: \"SUM(f.user_type='新客')\"}\n",
         14: "# terms snapshot(占位快照)\nversion: 14\nnotes: 商品维度下钻词(§16.2)+ timelex 时间表达式层\nintent:\n  trend: '走势|趋势|按天|每天|每日'\n",
         15: "# terms snapshot(占位快照)\nversion: 15\nnotes: 分析意图词 why/delta_rank;归因泛化(比率+可加指标)与 M4 变化贡献排名\nintent:\n  why: '为什么|什么原因|原因|归因|驱动|怎么回事'\n  delta_rank: '下降最明显|上升最多|变化最大|贡献最大'\n",
+        16: "# timelex snapshot(占位快照)\nversion: 16\nnotes: 裸 ISO 日期与「M月D日」单日解析;「A对比B」双时间表达式对比(timelex 确定性接管两期窗口)\nexpr:\n  iso_date: '2026-11-05'\n  pair: 'A对比B'\n",
     }
     insert_batches(cur, "INSERT INTO semantic_version (version, released, author, change_desc, yaml_snapshot) VALUES (%s,%s,%s,%s,%s)",
                    [(v, r, a, d, snapshots[v]) for v, r, a, d in versions])
