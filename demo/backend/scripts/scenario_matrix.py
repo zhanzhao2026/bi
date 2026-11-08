@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
-"""场景覆盖矩阵(§17 planner 加固的质量护栏):52 个场景 × 8 组,对运行中的后端做黑盒验证。
+"""场景覆盖矩阵(§17 planner 加固 + §16.5 分析类扩容的质量护栏):
+63 个场景 × 11 组,对运行中的后端做黑盒验证。
 
 用法(标准库实现,可独立运行,不依赖 app 包与第三方库):
-    cd backend && .venv/bin/python scripts/scenario_matrix.py            # 全量 52 场景
+    cd backend && .venv/bin/python scripts/scenario_matrix.py            # 全量 63 场景
     .venv/bin/python scripts/scenario_matrix.py --group 时间             # 只跑某组
     .venv/bin/python scripts/scenario_matrix.py --filter T07,U01        # 只跑指定 id
     .venv/bin/python scripts/scenario_matrix.py --out /tmp/x.json       # 指定报告路径
 
 - 只跑 LLM 模式(key 在 sys_settings,脚本绝不读取/修改/清除任何配置);
-  规则模式表现以既有单测(run_tests.sh 276 项)与 eval 规则 21/21 的已知结论
+  规则模式表现以既有单测(run_tests.sh 300+ 项)与 eval 26/26 的已知结论
   作为「规则对照」静态列印在报告中,不重复执行。
 - 每个场景:POST /api/chat(SSE)→ answer 卡 + done;再 GET /api/admin/audit/{trace_id}
   取 ir_json 做结构断言(metric/dims/filters/time/compare/limit/order)。
 - 组⑦不可表达:必须全部诚实拒答(error 卡,title=「这个问题我答不了」);
   组⑥/⑦的期望由「答错比拒答严重」原则制定。
+- 组⑨归因/⑩变化排名/⑪分析追问(v15):M5 归因泛化(比率+可加指标)、
+  M4 两期变化贡献排名、「为什么」追问继承升级。
 - 输出:控制台表格 + JSON 报告(默认 /tmp/scenario_report.json)。
 
 时间锚点:data_as_of = 2026-11-06(与 models.yml data_as_of_query 的 DB 水位一致)。
@@ -31,7 +34,8 @@ BASE_DEFAULT = "http://127.0.0.1:8310"
 ASOF = date(2026, 11, 6)          # 数据水位(MAX(pay_date))
 ASOF_S = ASOF.isoformat()
 
-GROUPS = ["①时间", "②指标", "③维度筛选", "④商品下钻", "⑤排名", "⑥边界", "⑦不可表达", "⑧多轮继承"]
+GROUPS = ["①时间", "②指标", "③维度筛选", "④商品下钻", "⑤排名", "⑥边界", "⑦不可表达", "⑧多轮继承",
+          "⑨归因", "⑩变化排名", "⑪分析追问"]
 
 
 # ---------------- 时间帮助函数(全部由 ASOF 推导,不写死星期几) ----------------
@@ -303,6 +307,63 @@ def build_scenarios() -> list:
            "规则=追问继承;LLM 需借会话上下文同答",
            pre=["最近7天直播渠道的退款率是多少?"],
            note="同 session:先问直播 7 天退款率,再追问 GMV"),
+    ]
+
+    # ============ ⑨ 归因(5;v15 M5 泛化,§16.5) ============
+    g = GROUPS[8]
+    SC += [
+        _S("A01", g, "最近30天退款率为什么上升?",
+           {"card": "attribution", "metric": "refund_rate", "time": L30},
+           "规则=退款域归因(golden #17 同型,既有能力)"),
+        _S("A02", g, "最近30天退款金额为什么上升?",
+           {"card": "attribution", "metric": "refund_amt", "time": L30},
+           "规则=v15 可加归因(元瀑布;此前被强制退款率)", note="golden #22 同型"),
+        _S("A03", g, "最近30天新客占比为什么变化?",
+           {"card": "attribution", "metric": "new_order_ratio", "time": L30,
+            "filters_empty": ["user_type"]},
+           "规则=v15 比率归因泛化;「新客」词不落筛选(占比口径剥离)",
+           note="filters.user_type 必须为空(否则指标恒 100%)"),
+        _S("A04", g, "最近30天订单退款率为什么上升?",
+           {"card": "attribution", "metric": "refund_order_rate", "time": L30},
+           "规则=v15 比率归因泛化(分母订单数,行级可加)"),
+        _S("A05", g, "美妆最近30天退款率为什么上升?",
+           {"card": "attribution", "metric": "refund_rate", "time": L30,
+            "filters": {"category": ["美妆"]}},
+           "规则=scoped 归因(golden #18 同型)"),
+    ]
+
+    # ============ ⑩ 变化排名(4;v15 M4 变化贡献排名) ============
+    g = GROUPS[9]
+    SC += [
+        _S("D01", g, "最近30天哪些类目GMV下降最明显?",
+           {"card": "rank", "metric": "gmv", "dims": ["category"], "compare": "prev_period"},
+           "规则=v15 M4(两期变化额排序+贡献占比;此前为当期排名,语义漂移)",
+           note="golden #25 同型"),
+        _S("D02", g, "最近30天哪些渠道GMV上升最多?",
+           {"card": "rank", "metric": "gmv", "dims": ["channel"], "compare": "prev_period"},
+           "规则=v15 M4 方向=up"),
+        _S("D03", g, "最近30天哪些类目退款金额下滑最明显?",
+           {"card": "rank", "metric": "refund_amt", "dims": ["category"], "compare": "prev_period"},
+           "规则=v15 M4(可加指标,贡献占比)"),
+        _S("D04", g, "最近30天哪些类目退款率变化最大?",
+           {"card": "rank", "metric": "refund_rate", "dims": ["category"], "compare": "prev_period"},
+           "规则=v15 M4(比率指标,pp 变化,无贡献占比列)"),
+    ]
+
+    # ============ ⑪ 分析追问(2;v15「为什么」继承升级,doc 04 §5) ============
+    g = GROUPS[10]
+    SC += [
+        _S("W01", g, "那为什么变化了呢?",
+           {"card": "attribution", "metric": "gmv", "time": L30,
+            "filters": {"category": ["美妆"]}},
+           "规则=why 追问继承升级 M5(继承上一轮指标+美妆筛选;LLM clarify 被守卫忽略)",
+           pre=["最近30天美妆的GMV是多少?"],
+           note="同 session:先问汇总,再以「为什么」追问 → 可加归因(GMV,元瀑布)"),
+        _S("W02", g, "那为什么上升呢?",
+           {"card": "attribution", "metric": "refund_rate", "time": L30},
+           "规则=why 追问继承升级 M5(继承退款率)",
+           pre=["最近30天退款率是多少?"],
+           note="同 session:先问退款率,再追问为什么上升 → 退款率归因(pp 瀑布)"),
     ]
     return SC
 

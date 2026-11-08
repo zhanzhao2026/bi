@@ -112,6 +112,31 @@ CARD_CASES = [
     ("各渠道GMV排名", {"card": "rank", "dim": "channel"}),
     ("最近30天哪个类目GMV最高", {"card": "rank", "dim": "category"}),
     ("最近30天退款率为什么上升", {"card": "attribution", "metric": "refund_rate"}),
+    # ---- v15 分析类扩容(§16.5):M4 变化排名 / M5 归因泛化 / 为什么追问 ----
+    ("哪些类目GMV下降最明显", {"card": "rank", "metric": "gmv", "dim": "category",
+                            "delta_dir": "down", "want_compare": True}),
+    ("哪些渠道GMV上升最多", {"card": "rank", "metric": "gmv", "dim": "channel",
+                          "delta_dir": "up", "want_compare": True}),
+    ("最近30天哪些类目退款率变化最大", {"card": "rank", "metric": "refund_rate",
+                                   "delta_dir": "abs", "want_compare": True}),
+    ("最近30天退款金额为什么上升", {"card": "attribution", "metric": "refund_amt",
+                                "why_attr": True}),
+    ("最近30天新客占比为什么变化", {"card": "attribution", "metric": "new_order_ratio",
+                                "why_attr": True}),
+    ("最近30天订单退款率为什么上升", {"card": "attribution", "metric": "refund_order_rate"}),
+    # 「新客」词仍会挂在规则层 filters;占比口径剥离由编排层 _answer_path
+    # 统一执行并注明(test_attribution E2E 锁定)
+    ("那为什么下降呢", {"card": "summary", "why_attr": True, "metric": None}),
+    # 边界:去重口径指标不可归因(ATTR_SPECS 边界),回落 summary
+    ("最近30天客单价为什么变化", {"card": "summary", "metric": "arppu"}),
+    ("最近30天支付人数为什么减少", {"card": "summary", "metric": "pay_user_cnt"}),
+    # compare 指标感知:指定指标保留为 compare_focus,卡型不变
+    ("最近30天新老客的退款率对比", {"card": "compare", "compare_focus": "refund_rate"}),
+    ("对比一下最近30天新客和老客的客单价", {"card": "compare"}),
+    # 不可表达回归锁:跨类目对比仍由规则判 summary(LLM 模式由逃生口拒答,
+    # 场景矩阵 U01);规则侧不得给出 attribution/rank,防止误答
+    ("女装今年以来退款金额比数码多多少", {"card": "summary", "metric": "refund_amt"}),
+    ("女装客单价比数码高多少", {"card": "summary", "metric": "arppu"}),
 ]
 
 

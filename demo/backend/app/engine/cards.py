@@ -51,6 +51,19 @@ def fmt_pp(v) -> str:
     return f"{float(v):+.2f}pp"
 
 
+def fmt_signed(v, kind: str = "amount") -> str:
+    """带符号变化量:kind="pp" 百分点 / "amount" 金额(万元换算)/ "count" 计数。"""
+    if v is None:
+        return "—"
+    v = float(v)
+    if kind == "pp":
+        return f"{v:+.2f}pp"
+    sign = "+" if v >= 0 else "-"
+    if kind == "amount":
+        return f"{sign}{fmt_amount(abs(v))}"
+    return f"{sign}{fmt_count(abs(v))}"
+
+
 def fmt_pp_plain(v) -> str:
     if v is None:
         return "—"

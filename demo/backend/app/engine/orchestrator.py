@@ -18,8 +18,8 @@ from ..semantic.loader import get_data_as_of, get_filter_options, get_semantic
 from . import attribution, guards, rules
 from . import session as session_store
 from .cards import (bar_chart, col, fmt_amount, fmt_count, fmt_pct1, fmt_pp,
-                    fmt_ratio, group_chart, line_chart, make_delta, table,
-                    waterfall_chart)
+                    fmt_ratio, fmt_signed, group_chart, line_chart, make_delta,
+                    table, waterfall_chart)
 
 logger = logging.getLogger("biz.orchestrator")
 
@@ -177,6 +177,10 @@ class Orchestrator:
                 asof = None
             parsed = rules.parse(question, options, asof)
             ir = None
+            # 规则已识别「为什么」类问法(why_attr)时,LLM 的逃生口
+            # (unsupportable/clarify)不得覆盖——归因是确定性分析模式
+            # (docs/04 M5,含追问继承升级),宁可按规则算也不放走
+            rules_attr = bool(parsed.get("ok") and parsed.get("why_attr"))
 
             if self.gateway.enabled():
                 try:
@@ -185,19 +189,25 @@ class Orchestrator:
                     if isinstance(llm_ir, dict) and str(llm_ir.get("unsupportable") or "").strip():
                         # 逃生口1(§17):LLM 诚实拒答 —— 问题超出语义层可表达范围
                         # (跨筛选组对比/预测/无指标),宁可拒答也不给语义漂移的数字
-                        card = self._unsupportable_card(trace_id,
-                                                        str(llm_ir["unsupportable"]))
-                        status = "error"
-                        ir = None
-                        llm_used = True
-                        llm_model = self.gateway.get_config().get("model")
+                        if rules_attr:
+                            logger.info("llm unsupportable ignored: rules attribution intent wins")
+                        else:
+                            card = self._unsupportable_card(trace_id,
+                                                            str(llm_ir["unsupportable"]))
+                            status = "error"
+                            ir = None
+                            llm_used = True
+                            llm_model = self.gateway.get_config().get("model")
                     elif isinstance(llm_ir, dict) and llm_ir.get("clarify"):
                         # 逃生口2(§17):LLM 判定问法模糊 → 复用 clarify 卡(时间选项+assume_note)
-                        card = self._clarify_card(trace_id)
-                        status = "clarify"
-                        ir = None
-                        llm_used = True
-                        llm_model = self.gateway.get_config().get("model")
+                        if rules_attr:
+                            logger.info("llm clarify ignored: rules attribution intent wins")
+                        else:
+                            card = self._clarify_card(trace_id)
+                            status = "clarify"
+                            ir = None
+                            llm_used = True
+                            llm_model = self.gateway.get_config().get("model")
                     elif llm_ir is not None:
                         cand = compiler.normalize_ir(llm_ir)
                         ok, err = compiler.validate_ir(cand, self.semantic, options)
@@ -285,6 +295,11 @@ class Orchestrator:
                      session_id, user, question, notes, assume_text,
                      timings, t0, llm_used, llm_model):
         sem = self.semantic
+        # 口径守卫:新客占比本身按新老客口径统计——「新客占比」会被 parse_filters
+        # 误挂 user_type=新客(指标恒为 100%),LLM IR 同样在此拦下并注明。
+        if ir.get("metric") == "new_order_ratio" and (ir.get("filters") or {}).get("user_type"):
+            ir["filters"]["user_type"] = []
+            notes.append("新客占比本身按新老客口径统计,已忽略单独的客群筛选。")
         start, end = compiler.resolve_time(ir["time"], data_as_of)
         # 对比窗口:prev_period 等长平移,或「X比Y」解析出的显式 range(§16.1)
         prev = compiler.resolve_compare(ir, start, end)
@@ -300,6 +315,13 @@ class Orchestrator:
         #  compare/attribution/overview 等规则意图仍以规则为准 —— IR 无法表达这些卡)
         if source == "llm" and card_kind == "summary" and (ir.get("dims") or []):
             card_kind = self._card_kind_from_ir(ir)
+        # doc 04 §5:「为什么」追问继承主题升级 M5 归因 —— 显式指标问法已在规则层
+        # 直判,这里只兜「那为什么…呢」这类无指标追问(继承上一轮指标后升级)。
+        if (parsed.get("ok") and parsed.get("why_attr") and card_kind == "summary"
+                and not (ir.get("dims") or []) and not parsed.get("vague")
+                and (parsed.get("domain") or "") not in ("overview", "refund", "compare")
+                and ir.get("metric") in attribution.ATTR_KEYS):
+            card_kind = "attribution"
         dim_label = {"category": "类目", "channel": "渠道", "product": "商品"}.get(
             (parsed or {}).get("dim") or "", "类目")
 
@@ -671,7 +693,8 @@ class Orchestrator:
                     try:
                         attr = attribution.compute(ctx["start"], ctx["end"], prev[0], prev[1],
                                                    ctx["permission"], None,
-                                                   filters=ir.get("filters") or {})
+                                                   filters=ir.get("filters") or {},
+                                                   metric_key="refund_rate")
                         if attr.get("top"):
                             base += (f",主要由{attr['top']['name']}类目驱动"
                                      f"({attr['top']['rate_old']:.2f}%→{attr['top']['rate_new']:.2f}%)")
@@ -828,12 +851,18 @@ class Orchestrator:
 
     def _data_rank(self, ctx, result):
         ir = ctx["ir"]
+        dims = ir.get("dims") or ["category"]
+        # M4 两期变化排名(docs/04):显式对比窗口 + 类目/渠道维(小基数维,两窗
+        # 全量 ≤ LIMIT,合并精确)。商品维会被 LIMIT 截断(「下滑王」可能不在
+        # 当期 TOP-N),不支持变化排名,商品问法仍走普通当期排名。
+        if (ctx.get("prev") and str(ir.get("compare") or "none") != "none"
+                and dims[0] in ("category", "channel")):
+            return self._data_rank_delta(ctx, result)
         mkey = ir["metric"]
         m = self.semantic.metric(mkey)
         name = m["name"]
         is_ratio = self.semantic.is_ratio(mkey)
         fmt = fmt_ratio if is_ratio else (fmt_count if mkey in METRIC_ORDER else fmt_amount)
-        dims = ir.get("dims") or ["category"]
         dim = "product" if "product" in dims else dims[0]
         is_product = dim == "product"
         dim_label = compiler.DIM_LABEL.get(dim, dim)
@@ -910,84 +939,209 @@ class Orchestrator:
         result["query_detail"] = f"已完成{time_label}按{dim_label}汇总(共 {len(rows_now)} 组)"
         return result
 
+    def _data_rank_delta(self, ctx, result):
+        """M4 变化贡献排名:两期同维度对比 → 变化额排序 + 可加指标的贡献占比。
+
+        触发条件见 _data_rank 头部(仅类目/渠道维,保证两窗全量参与合并)。
+        """
+        ir = ctx["ir"]
+        mkey = ir["metric"]
+        m = self.semantic.metric(mkey)
+        name = m["name"]
+        is_ratio = self.semantic.is_ratio(mkey)
+        dim = (ir.get("dims") or ["category"])[0]
+        dim_label = compiler.DIM_LABEL.get(dim, dim)
+        time_label = ctx["time_label"]
+        delta_dir = (ctx.get("parsed") or {}).get("delta_dir") or "abs"
+        if is_ratio:
+            val_fmt, delta_fmt = fmt_ratio, fmt_pp
+        elif mkey in METRIC_ORDER:
+            val_fmt, delta_fmt = fmt_count, (lambda v: fmt_signed(v, "count"))
+        else:
+            val_fmt, delta_fmt = fmt_amount, (lambda v: fmt_signed(v, "amount"))
+
+        rows_now = self._run(ir, ctx["start"], ctx["end"], ctx["permission"], ctx["sqls"])
+        rows_now = [r for r in rows_now if r["dim"]]
+        rows_prev = self._run(ir, ctx["prev"][0], ctx["prev"][1], ctx["permission"], ctx["sqls"])
+        rows_prev = [r for r in rows_prev if r["dim"]]
+        result["row_count"] = len(rows_now)
+        result["executed_sqls"] = list(ctx["sqls"])
+
+        now_m = {r["dim"]: (r["val"] or 0) for r in rows_now}
+        prev_m = {r["dim"]: (r["val"] or 0) for r in rows_prev}
+        names = sorted(set(now_m) | set(prev_m))
+        deltas = {nm: now_m.get(nm, 0.0) - prev_m.get(nm, 0.0) for nm in names}
+        if delta_dir == "down":
+            ordered = sorted(names, key=lambda nm: (deltas[nm], -abs(deltas[nm])))
+        elif delta_dir == "up":
+            ordered = sorted(names, key=lambda nm: (-deltas[nm], -abs(deltas[nm])))
+        else:
+            ordered = sorted(names, key=lambda nm: -abs(deltas[nm]))
+
+        # 贡献占比仅对可加指标有意义(类目/渠道全量参与,占比=占整体变化量比例);
+        # 比率指标的 pp 变化不可跨维加和,只呈现变化额。
+        additive = (not is_ratio and mkey in ("gmv", "refund_amt", "item_cnt", "order_cnt"))
+        net = sum(deltas.values()) if additive else None
+        shareable = additive and net is not None and abs(net) > 1e-9
+
+        dir_word = {"down": "下降", "up": "上升"}.get(delta_dir, "变化")
+        top_name = ordered[0] if ordered else None
+        kpis = []
+        if top_name is not None:
+            kpis.append({"label": f"{name}{dir_word}最明显的{dim_label}", "value": top_name})
+            kpis.append({"label": f"{name}变化", "value": delta_fmt(deltas[top_name])})
+        chart = bar_chart(f"{time_label}各{dim_label}{name}变化(较{ctx['prev_label']})",
+                          ordered, [{"name": f"{name}变化",
+                                     "data": [round(deltas[nm], 4) for nm in ordered]}])
+        cols = [col(dim, dim_label), col("val_old", f"上期{name}", "right"),
+                col("val_new", f"本期{name}", "right"), col("delta", "变化", "right")]
+        if shareable:
+            cols.append(col("share", "贡献占比", "right"))
+        rows = []
+        for nm in ordered:
+            row = {dim: nm,
+                   "val_old": val_fmt(prev_m.get(nm, 0.0)),
+                   "val_new": val_fmt(now_m.get(nm, 0.0)),
+                   "delta": delta_fmt(deltas[nm])}
+            if shareable:
+                row["share"] = fmt_pct1(deltas[nm] / net * 100)
+            rows.append(row)
+        tbl = table(cols, rows)
+
+        n = []
+        if top_name is not None:
+            share_txt = ""
+            if shareable and deltas[top_name] / net >= 0:
+                share_txt = f",占整体变化的 {deltas[top_name] / net * 100:.1f}%"
+            n.append(f"{ctx['period']}较{ctx['prev_label']},{dir_word}最明显的是{top_name}:"
+                     f"由 {val_fmt(prev_m.get(top_name, 0.0))} 变为 {val_fmt(now_m.get(top_name, 0.0))},"
+                     f"变化 {delta_fmt(deltas[top_name])}{share_txt}。")
+            if shareable and len(ordered) >= 3:
+                top3 = sum(deltas[nm] for nm in ordered[:3]) / net * 100
+                n.append(f"变化前3名{dim_label}合计占整体变化的 {top3:.1f}%。")
+            if additive and not shareable:
+                n.append("整体基本持平,各类目涨跌相互抵消。")
+        else:
+            n.append(f"{ctx['period']}暂无{dim_label}数据。")
+        result["narrative"] = n
+        narrator_rows = [{dim_label: nm, f"{name}变化": delta_fmt(deltas[nm])} for nm in ordered]
+        result["narrator_payload"] = {"指标": name, "维度": dim_label,
+                                      "时间范围": f"{ctx['start']}~{ctx['end']}",
+                                      "对比期": f"{ctx['prev'][0]}~{ctx['prev'][1]}",
+                                      "明细": narrator_rows}
+        result["raw"].update({
+            "value": round(deltas[top_name], 4) if top_name else None,
+            "metrics": [mkey],
+            "rows": [{"name": nm, "value": round(deltas[nm], 4)} for nm in ordered]})
+        result["card_fn"] = lambda tid, dao, notes, atext: self._finish_card(
+            "rank", tid, dao, f"{time_label}各{dim_label}{name}变化", kpis, chart, tbl,
+            [mkey], notes, atext, ctx)
+        result["query_detail"] = (f"已完成{time_label}按{dim_label}两期对比汇总(共 {len(ordered)} 组)")
+        return result
+
     def _data_attribution(self, ctx, result):
+        """归因卡(M5 泛化):比率型 rate×share 精确可加分解 / 可加型绝对差瀑布。"""
         ir = ctx["ir"]
         time_label = ctx["time_label"]
         pstart, pend = ctx["prev"] if ctx["prev"] else compiler.prev_range(ctx["start"], ctx["end"])
         filters = ir.get("filters") or {}
+        mkey = (ctx.get("parsed") or {}).get("metric") or ir.get("metric") or "refund_rate"
+        if mkey not in attribution.ATTR_KEYS:
+            logger.warning("attribution: metric %s not attributable, fallback refund_rate", mkey)
+            mkey = "refund_rate"
         attr = attribution.compute(ctx["start"], ctx["end"], pstart, pend,
-                                   ctx["permission"], ctx["sqls"], filters=filters)
+                                   ctx["permission"], ctx["sqls"], filters=filters,
+                                   metric_key=mkey)
         result["row_count"] = len(attr["items"])
         result["executed_sqls"] = list(ctx["sqls"])
+
+        pct = attr["pct"]
+        label = attr["label"]
+        unit_word = "(pp)" if pct else ("(元)" if attr["fmt"] == "amount" else "")
+        val_fmt = fmt_ratio if pct else (fmt_amount if attr["fmt"] == "amount" else fmt_count)
+        delta_fmt = (lambda v: fmt_pp(v)) if pct else (lambda v: fmt_signed(v, attr["fmt"]))
 
         scoped_cats = [c for c in attr.get("scoped") or []]
         scope = ("仅" + "/".join(scoped_cats)) if scoped_cats else ""
         title_scope = ("/".join(scoped_cats)) if scoped_cats else ""
-        kpis = [{"label": "退款率", "value": fmt_ratio(attr["rate_new"]),
-                 "delta": make_delta(attr["rate_new"], attr["rate_old"], "pp", True,
+        scope_label = label if scoped_cats else f"整体{label}"
+        kpis = [{"label": label, "value": val_fmt(attr["rate_new"]),
+                 "delta": make_delta(attr["rate_new"], attr["rate_old"],
+                                     "pp" if pct else "pct", attr["higher_bad"],
                                      label=f"较{ctx['prev_label']}")}]
         chart = waterfall_chart(
-            f"{time_label}退款率变化归因(pp)",
-            f"上一期 {attr['rate_old']:.2f}",
+            f"{time_label}{label}变化归因{unit_word}",
+            f"上一期 {val_fmt(attr['rate_old'])}",
             attr["waterfall_items"],
-            f"当前 {attr['rate_new']:.2f}",
+            f"当前 {val_fmt(attr['rate_new'])}",
         )
-        cols = [col("category", "类目"), col("rate_old", "上期退款率", "right"),
-                col("rate_new", "本期退款率", "right"), col("delta", "变化", "right"),
+        cols = [col("category", "类目"), col("rate_old", f"上期{label}", "right"),
+                col("rate_new", f"本期{label}", "right"), col("delta", "变化", "right"),
                 col("contrib", "贡献", "right")]
         rows = []
         for r in attr["detail_rows"]:
             rows.append({
                 "category": r["category"],
-                "rate_old": fmt_ratio(r["rate_old"]),
-                "rate_new": fmt_ratio(r["rate_new"]),
-                "delta": fmt_pp(r["delta"]),
-                "contrib": fmt_pp(r["contrib"]),
+                "rate_old": val_fmt(r["rate_old"]),
+                "rate_new": val_fmt(r["rate_new"]),
+                "delta": delta_fmt(r["delta"]),
+                "contrib": delta_fmt(r["contrib"]),
             })
         tbl = table(cols, rows)
 
         d = attr["delta"]
-        direction = "上升" if d > 0 else "下降"
         top = attr["top"]
-        rate_word = "退款率" if scoped_cats else "整体退款率"
-        n = [f"{ctx['period']}{scope}{rate_word} {attr['rate_new']:.2f}%,较{ctx['prev_label']}的 "
-             f"{attr['rate_old']:.2f}% {direction} {abs(d):.2f}pp。"]
+        wmin = attribution.RATIO_WMIN if pct else attribution.ADD_WMIN
+        if pct:
+            direction = "上升" if d > 0 else "下降"
+            n = [f"{ctx['period']}{scope}{scope_label} {attr['rate_new']:.2f}%,较{ctx['prev_label']}的 "
+                 f"{attr['rate_old']:.2f}% {direction} {abs(d):.2f}pp。"]
+        else:
+            word = "增加" if d > 0 else ("减少" if d < 0 else "持平")
+            pct_txt = f"({d / attr['rate_old'] * 100:+.1f}%)" if attr["rate_old"] else ""
+            n = [f"{ctx['period']}{scope}{scope_label} {val_fmt(attr['rate_new'])},"
+                 f"较{ctx['prev_label']}{word} {val_fmt(abs(d))}{pct_txt}。"]
         if scoped_cats:
-            n.append(f"当前范围为单一类目({title_scope}),整体变化即其退款率变化 {d:+.2f}pp。")
+            n.append(f"当前范围为单一类目({title_scope}),整体变化即其{label}变化 {delta_fmt(d)}。")
         elif top:
-            up_down = "升至" if top["rate_new"] >= top["rate_old"] else "降至"
-            n.append(f"按类目拆解,{top['name']}是主要驱动:退款率由 {top['rate_old']:.2f}% "
-                     f"{up_down} {top['rate_new']:.2f}%,对整体贡献约 {top['contrib']:+.2f}pp。")
+            if pct:
+                up_down = "升至" if top["rate_new"] >= top["rate_old"] else "降至"
+                n.append(f"按类目拆解,{top['name']}是主要驱动:{label}由 {top['rate_old']:.2f}% "
+                         f"{up_down} {top['rate_new']:.2f}%,对整体贡献约 {top['contrib']:+.2f}pp。")
+            else:
+                n.append(f"按类目拆解,{top['name']}是主要驱动:{label}由 {val_fmt(top['rate_old'])} "
+                         f"变为 {val_fmt(top['rate_new'])},贡献约 {delta_fmt(top['contrib'])}。")
         if attr["has_residual"]:
-            n.append(f"此外,类目结构变化带来 {attr['residual']:+.2f}pp 的影响。")
+            n.append(f"此外,类目结构变化带来 {delta_fmt(attr['residual'])} 的影响。")
         elif not scoped_cats:
             others = [it for it in attr["items"]
-                      if (not top or it["name"] != top["name"]) and abs(it["contrib"]) >= 0.005]
+                      if (not top or it["name"] != top["name"]) and abs(it["contrib"]) >= wmin]
             if others:
                 others_sum = sum(it["contrib"] for it in others)
-                n.append(f"其余类目合计贡献 {others_sum:+.2f}pp,影响相对有限。")
+                n.append(f"其余类目合计贡献 {delta_fmt(others_sum)},影响相对有限。")
             else:
-                n.append("其余类目退款率基本持平。")
+                n.append(f"其余类目{label}基本持平。")
 
         result["narrative"] = n
         result["narrator_payload"] = {
-            "整体退款率(本期)": fmt_ratio(attr["rate_new"]),
-            "整体退款率(上期)": fmt_ratio(attr["rate_old"]),
-            "变化(pp)": f"{d:.2f}",
-            "类目明细": [{"类目": r["category"], "上期": fmt_ratio(r["rate_old"]),
-                          "本期": fmt_ratio(r["rate_new"]), "贡献": fmt_pp(r["contrib"])}
+            f"{scope_label}(本期)": val_fmt(attr["rate_new"]),
+            f"{scope_label}(上期)": val_fmt(attr["rate_old"]),
+            "变化": delta_fmt(d),
+            "类目明细": [{"类目": r["category"], "上期": val_fmt(r["rate_old"]),
+                          "本期": val_fmt(r["rate_new"]), "贡献": delta_fmt(r["contrib"])}
                          for r in attr["detail_rows"]],
         }
         result["raw"].update({
-            "value": attr["rate_new"], "prev": attr["rate_old"], "delta_pp": attr["delta"],
-            "residual_pp": attr["residual"],
-            "metrics": ["refund_rate", "gmv"],
+            "value": attr["rate_new"], "prev": attr["rate_old"],
+            "delta_pp": attr["delta"] if pct else None,
+            "residual_pp": attr["residual"] if pct else None,
+            "metrics": [mkey] + (["gmv"] if mkey == "refund_rate" else []),
             "rows": [{"name": r["category"], "value": round(r["contrib"], 4)}
                      for r in attr["detail_rows"]],
         })
         result["card_fn"] = lambda tid, dao, notes, atext: self._finish_card(
-            "attribution", tid, dao, f"{time_label}{title_scope}退款率归因", kpis, chart, tbl,
-            ["refund_rate", "gmv"], notes, atext, ctx,
+            "attribution", tid, dao, f"{time_label}{title_scope}{label}归因", kpis, chart, tbl,
+            [mkey] + (["gmv"] if mkey == "refund_rate" else []), notes, atext, ctx,
             scope_note="以上为相关性线索,建议业务侧进一步确认。")
         result["query_detail"] = (f"已汇总本期({ctx['start'][5:]}~{ctx['end'][5:]})与"
                                   f"上一期({pstart[5:]}~{pend[5:]})的分类目数据")
@@ -1019,7 +1173,24 @@ class Orchestrator:
         if ctx["prev"]:
             rp = self._run(ratio_ir, ctx["prev"][0], ctx["prev"][1], ctx["permission"], ctx["sqls"])
             ratio_prev = rp[0]["val"] if rp else None
-        result["row_count"] = len(gmv_rows) + len(order_rows) + len(arppu_rows)
+
+        # 指标感知(§10):问句指定了 compare 口径可承载的指标 → 追加该指标的
+        # 分组序列/表列/叙事(gmv/order_cnt/arppu 已是默认四件套,无需 focus)
+        focus = (ctx.get("parsed") or {}).get("compare_focus")
+        focus = focus if focus in ("refund_rate", "refund_amt", "item_cnt",
+                                   "pay_user_cnt", "refund_order_rate") else None
+        focus_rows: list = []
+        focus_prev_rows: list = []
+        if focus:
+            f_ir = dict(base_ir)
+            f_ir["metric"] = focus
+            focus_rows = self._run(f_ir, ctx["start"], ctx["end"], ctx["permission"], ctx["sqls"])
+            if ctx["prev"]:
+                focus_prev_rows = self._run(f_ir, ctx["prev"][0], ctx["prev"][1],
+                                            ctx["permission"], ctx["sqls"])
+
+        result["row_count"] = (len(gmv_rows) + len(order_rows) + len(arppu_rows)
+                               + len(focus_rows))
         result["executed_sqls"] = list(ctx["sqls"])
 
         def by_type(rows):
@@ -1032,24 +1203,42 @@ class Orchestrator:
         arppu_vals = [round(arppu_m.get(t, 0.0), 2) for t in types]
         gmv_total = sum(gmv_vals) or None
 
+        f_m = by_type(focus_rows) if focus else {}
+        f_meta = self.semantic.metric(focus) if focus else None
+        focus_name = (f_meta or {}).get("name") or ""
+        if focus:
+            f_fmt = (fmt_ratio if self.semantic.is_ratio(focus)
+                     else (fmt_count if focus in ("pay_user_cnt", "item_cnt") else fmt_amount))
+            f_vals = [round(f_m.get(t, 0.0), 4) for t in types]
+        else:
+            f_fmt, f_vals = None, []
+
+        cmp_series = [{"name": "GMV", "data": gmv_vals},
+                      {"name": "订单数", "data": order_vals}]
+        if focus:
+            cmp_series.append({"name": focus_name, "data": f_vals})
+
         kpis = [{"label": "新客订单占比", "value": fmt_pct1(new_ratio)}]
         if new_ratio is not None and ratio_prev is not None:
             kpis[0]["delta"] = make_delta(new_ratio, ratio_prev, "pp", False,
                                           label=f"较{ctx['prev_label']}")
 
-        chart = group_chart(f"{time_label}新老客对比", types,
-                            [{"name": "GMV", "data": gmv_vals},
-                             {"name": "订单数", "data": order_vals}])
+        chart = group_chart(f"{time_label}新老客对比", types, cmp_series)
         cols = [col("user_type", "用户类型"), col("orders", "订单数", "right"),
                 col("gmv", "GMV", "right"), col("arppu", "客单价", "right"),
                 col("share", "GMV占比", "right")]
+        if focus:
+            cols.append(col("focus", focus_name, "right"))
         rows = []
         for i, t in enumerate(types):
-            rows.append({
+            row = {
                 "user_type": t, "orders": fmt_count(order_vals[i]),
                 "gmv": fmt_amount(gmv_vals[i]), "arppu": fmt_amount(arppu_vals[i]),
                 "share": fmt_pct1(gmv_vals[i] / gmv_total * 100) if gmv_total else "—",
-            })
+            }
+            if focus:
+                row["focus"] = f_fmt(f_vals[i])
+            rows.append(row)
         tbl = table(cols, rows)
 
         n = [f"{ctx['period']}新客订单占比 {fmt_pct1(new_ratio)}。"]
@@ -1057,6 +1246,8 @@ class Orchestrator:
             n.append(f"新客 GMV {fmt_amount(gmv_vals[0])}(占 {gmv_vals[0] / gmv_total * 100:.1f}%),"
                      f"老客 GMV {fmt_amount(gmv_vals[1])}(占 {gmv_vals[1] / gmv_total * 100:.1f}%)。")
         n.append(f"客单价方面,新客 {fmt_amount(arppu_vals[0])} 元,老客 {fmt_amount(arppu_vals[1])} 元。")
+        if focus:
+            n.append(f"{focus_name}方面,新客 {f_fmt(f_vals[0])},老客 {f_fmt(f_vals[1])}。")
         if ctx["prev"]:
             op = self._run(order_ir, ctx["prev"][0], ctx["prev"][1], ctx["permission"], ctx["sqls"])
             op_m = by_type(op)
@@ -1068,23 +1259,43 @@ class Orchestrator:
 
             n.append(f"与{ctx['prev_label']}相比,新客订单 {chg(order_vals[0], op_m.get('新客'))},"
                      f"老客订单 {chg(order_vals[1], op_m.get('老客'))}。")
+            if focus:
+                fp_m = by_type(focus_prev_rows)
+
+                def fchg(new, old):
+                    if old is None or old == 0:
+                        return "—"
+                    if self.semantic.is_ratio(focus):
+                        return f"{new - old:+.2f}pp"
+                    return f"{(new / old - 1) * 100:+.1f}%"
+
+                n.append(f"{focus_name}变化:新客 {fchg(f_vals[0], fp_m.get('新客'))},"
+                         f"老客 {fchg(f_vals[1], fp_m.get('老客'))}。")
         result["narrative"] = n
         result["narrator_payload"] = {"时间范围": f"{ctx['start']}~{ctx['end']}",
                                       "新客订单占比": fmt_pct1(new_ratio),
                                       "新客GMV": fmt_amount(gmv_vals[0]), "老客GMV": fmt_amount(gmv_vals[1]),
                                       "新客订单数": fmt_count(order_vals[0]), "老客订单数": fmt_count(order_vals[1]),
                                       "新客客单价": fmt_amount(arppu_vals[0]), "老客客单价": fmt_amount(arppu_vals[1])}
+        if focus:
+            result["narrator_payload"][f"新客{focus_name}"] = f_fmt(f_vals[0])
+            result["narrator_payload"][f"老客{focus_name}"] = f_fmt(f_vals[1])
         result["raw"].update({"value": new_ratio, "prev": ratio_prev,
-                              "metrics": ["new_order_ratio", "gmv", "order_cnt", "arppu"],
+                              "metrics": ["new_order_ratio", "gmv", "order_cnt", "arppu"]
+                                         + ([focus] if focus else []),
                               "rows": [{"name": "新客GMV", "value": gmv_vals[0]},
                                        {"name": "老客GMV", "value": gmv_vals[1]},
                                        {"name": "新客订单数", "value": order_vals[0]},
                                        {"name": "老客订单数", "value": order_vals[1]},
                                        {"name": "新客客单价", "value": arppu_vals[0]},
-                                       {"name": "老客客单价", "value": arppu_vals[1]}]})
+                                       {"name": "老客客单价", "value": arppu_vals[1]}]
+                                         + ([{"name": f"新客{focus_name}", "value": f_vals[0]},
+                                             {"name": f"老客{focus_name}", "value": f_vals[1]}]
+                                            if focus else [])})
         result["card_fn"] = lambda tid, dao, notes, atext: self._finish_card(
             "compare", tid, dao, f"{time_label}新老客对比", kpis, chart, tbl,
-            ["new_order_ratio", "gmv", "order_cnt", "arppu"], notes, atext, ctx)
+            ["new_order_ratio", "gmv", "order_cnt", "arppu"] + ([focus] if focus else []),
+            notes, atext, ctx)
         result["query_detail"] = f"已完成{time_label}新老客数据汇总"
         return result
 

@@ -424,11 +424,17 @@ def main():
         (10, "2026-09-12", "数据小组", "初版语义层:定义 GMV、支付订单数、支付人数、客单价、支付件数、退款金额等核心指标口径"),
         (11, "2026-10-18", "数据小组", "退款率口径说明补充:分子含『仅退款』与『退货退款』两部分,分母为同范围付款金额(GMV)"),
         (12, "2026-11-06", "数据小组", "当前版本:比率类指标分母统一为同范围 GMV;新增订单退款率、新客订单占比指标"),
+        (13, "2026-11-07", "数据小组", "指标定义重构:分子指标(退款订单数/新客订单数)上提为基础指标,派生指标以 depends_on+expr 声明"),
+        (14, "2026-11-07", "数据小组", "新增商品维度下钻词与时间表达式层(旬/周/相邻比较),支持类目→商品层级分析"),
+        (15, "2026-11-08", "数据小组", "分析类场景扩容:归因支持退款金额/新客占比/订单退款率/GMV 等指标与两期变化贡献排名;词表新增 why/delta_rank 分析意图"),
     ]
     snapshots = {
         10: "# semantic metrics snapshot(占位快照)\nversion: 10\nmetrics:\n  gmv: {agg: 'SUM(f.pay_amount)'}\n  order_cnt: {agg: 'COUNT(DISTINCT f.order_id)'}\n  refund_amt: {agg: 'SUM(f.refund_amount)'}\n",
         11: "# semantic metrics snapshot(占位快照)\nversion: 11\nnotes: 退款率分子含仅退款与退货退款,分母为同范围 GMV\nmetrics:\n  refund_rate: {agg: 'SUM(f.refund_amount)/NULLIF(SUM(f.pay_amount),0)'}\n",
         12: "# semantic metrics snapshot(占位快照)\nversion: 12\nnotes: 比率类指标分母统一为同范围 GMV\nmetrics:\n  refund_rate: {agg: 'SUM(f.refund_amount)/NULLIF(SUM(f.pay_amount),0)'}\n  new_order_ratio: {agg: \"SUM(f.user_type='新客')/NULLIF(COUNT(DISTINCT f.order_id),0)\"}\n",
+        13: "# semantic metrics snapshot(占位快照)\nversion: 13\nnotes: 分子指标上提为基础指标,派生指标 depends_on+expr\nmetrics:\n  refund_order_cnt: {agg: 'SUM(f.is_refund)'}\n  new_order_cnt: {agg: \"SUM(f.user_type='新客')\"}\n",
+        14: "# terms snapshot(占位快照)\nversion: 14\nnotes: 商品维度下钻词(§16.2)+ timelex 时间表达式层\nintent:\n  trend: '走势|趋势|按天|每天|每日'\n",
+        15: "# terms snapshot(占位快照)\nversion: 15\nnotes: 分析意图词 why/delta_rank;归因泛化(比率+可加指标)与 M4 变化贡献排名\nintent:\n  why: '为什么|什么原因|原因|归因|驱动|怎么回事'\n  delta_rank: '下降最明显|上升最多|变化最大|贡献最大'\n",
     }
     insert_batches(cur, "INSERT INTO semantic_version (version, released, author, change_desc, yaml_snapshot) VALUES (%s,%s,%s,%s,%s)",
                    [(v, r, a, d, snapshots[v]) for v, r, a, d in versions])
@@ -509,6 +515,23 @@ def main():
          f"(SELECT SUM(f.refund_amount)/NULLIF(SUM(f.pay_amount),0) FROM fact_order f JOIN dim_category dc "
          f"ON dc.category_id=f.category_id WHERE dc.category_name='美妆' AND f.pay_date BETWEEN '{P0}' AND '{P1}')",
          5.0, "核心"),
+        # ---- 分析类扩容(v15):可加归因 / 比率归因泛化 / M4 变化排名 / compare 指标感知 ----
+        ("最近30天退款金额为什么上升?", "attribution", "refund_amt", None,
+         f"SELECT ROUND(SUM(f.refund_amount),2) FROM fact_order f WHERE f.pay_date BETWEEN '{L0}' AND '{L1}'",
+         2.0, "分析扩容"),
+        ("最近30天新客占比为什么变化?", "attribution", "new_order_ratio", None,
+         f"SELECT SUM(f.user_type='新客')/NULLIF(COUNT(DISTINCT f.order_id),0)*100 FROM fact_order f "
+         f"WHERE f.pay_date BETWEEN '{L0}' AND '{L1}'", 2.0, "分析扩容"),
+        ("最近30天订单退款率为什么上升?", "attribution", "refund_order_rate", None,
+         f"SELECT SUM(f.is_refund)/NULLIF(COUNT(DISTINCT f.order_id),0)*100 FROM fact_order f "
+         f"WHERE f.pay_date BETWEEN '{L0}' AND '{L1}'", 2.0, "分析扩容"),
+        ("最近30天哪些类目GMV下降最明显?", "rank", "gmv", '["category"]',
+         f"SELECT MIN(d) FROM (SELECT SUM(CASE WHEN f.pay_date BETWEEN '{L0}' AND '{L1}' THEN f.pay_amount ELSE 0 END) "
+         f"- SUM(CASE WHEN f.pay_date BETWEEN '{P0}' AND '{P1}' THEN f.pay_amount ELSE 0 END) AS d "
+         f"FROM fact_order f GROUP BY f.category_id) t", 2.0, "分析扩容"),
+        ("最近30天新老客的退款率对比?", "compare", "refund_rate", '["user_type=新客"]',
+         f"SELECT SUM(f.refund_amount)/NULLIF(SUM(f.pay_amount),0)*100 FROM fact_order f "
+         f"WHERE f.pay_date BETWEEN '{L0}' AND '{L1}' AND f.user_type='新客'", 2.0, "分析扩容"),
         ("销售额怎么样", "clarify", None, None, None, 0.0, "兜底"),
         ("员工平均工资是多少", "refuse", None, None, None, 0.0, "兜底"),
         ("帮我看下具体订单明细", "boundary", None, None, None, 0.0, "边界"),

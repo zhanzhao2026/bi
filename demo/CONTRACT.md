@@ -183,7 +183,7 @@ SSE(`POST /api/chat`,text/event-stream),事件:`stage`、`answer`、`error`、`d
 - `POST /api/admin/settings/test` 发一条 1-token 测试消息验证连通性
 
 ## 9. 规则兜底意图(无 LLM 时必须可用,≥8 场景)
-退款(走势→trend;类目/原因/为什么→attribution;默认 summary)/ GMV·销售额·成交(走势→trend;排名/类目贡献→rank;渠道→rank(channel);默认 summary)/ 客单价 / 支付人数 / 订单数 / 退款金额 / 新老客对比 / 昨天·上月·最近7天·最近30天 时间解析 / 美妆·女装…类目词解析 / 直播·私域…渠道词解析。关键词命中表写在 `app/engine/rules.py`。
+退款(走势→trend;类目/原因/为什么→attribution;默认 summary)/ GMV·销售额·成交(走势→trend;排名/类目贡献→rank;**变化排名(下降最明显/上升最多/变化最大)→ rank+prev_period(§17)**;渠道→rank(channel);默认 summary;**为什么→attribution(可归因指标,§17)**)/ 客单价 / 支付人数 / 订单数 / 退款金额 / 新老客对比 / 昨天·上月·最近7天·最近30天 时间解析 / 美妆·女装…类目词解析 / 直播·私域…渠道词解析。关键词命中表写在 `app/engine/rules.py`,分析意图词(why/delta_rank)在 `semantic/terms.yml intent`。
 
 ## 10. 答案卡 Schema(前后端唯一数据契约)
 ```json
@@ -204,6 +204,9 @@ SSE(`POST /api/chat`,text/event-stream),事件:`stage`、`answer`、`error`、`d
 - chart.kind:`line`(趋势,compare 时两条线系列名"本期/上一期")、`bar`、`waterfall`(如上)、`group`(分组对比,如新老客两指标)
 - rank 卡 chart.kind=bar + 完整 table;summary 卡可无 chart;clarify 卡有 `options:[{label,value}]` + `assume_note`
 - narrative 每句一元素;数值全部来自结果集(千分位、万元换算由后端做好)
+- **归因卡泛化(§17)**:type=attribution 覆盖 `ATTR_SPECS` 内指标——比率型(退款率/订单退款率/新客订单占比,瀑布单位 pp)与可加型(GMV/退款金额/订单数/支付件数/退款订单数/新客订单数,瀑布单位 元/单/件);去重口径指标(客单价/支付人数)不可归因,其「为什么」问法由 summary+环比承接
+- **rank 卡两期变化形态(§17)**:IR `compare=prev_period` 且维度为类目/渠道时,输出两期变化排名(列:上期/本期/变化/贡献占比);变化额按问句方向排序(下降最明显=Δ 升序);贡献占比仅可加指标且整体变化非零时展示
+- **compare 卡指标感知(§17)**:问句指定退款率/退款金额/支付件数/支付人数/订单退款率时,追加该指标的分组序列/表列/叙事(默认 GMV/订单数/客单价/新客占比四件套不变)
 
 ## 11. API 规范(前缀 /api;除 chat 外均为 JSON)
 | 方法/路径 | 说明 |
@@ -220,7 +223,7 @@ SSE(`POST /api/chat`,text/event-stream),事件:`stage`、`answer`、`error`、`d
 | GET /api/admin/audit | `?keyword&page&size` 列表(不含 ir/sql 大字段) |
 | GET /api/admin/audit/{trace_id} | 详情:全字段展开(ir_json/sql_text/stage_timings/result_json) |
 | GET /api/admin/eval | golden_qa 列表 + 最近 eval_history 5 次 |
-| POST /api/admin/eval/run | 跑全部 golden_qa(按当前 llm/rule 模式),写 eval_history,返回报告 |
+| POST /api/admin/eval/run | 跑全部 golden_qa(26 条,按当前 llm/rule 模式),写 eval_history,返回报告 |
 | GET /api/admin/settings | llm_enabled/base_url/model/has_key/key_masked |
 | PUT /api/admin/settings | 更新 llm_base_url/model/api_key(空串=清除)→ 写 sys_settings |
 | POST /api/admin/settings/test | 实测连通:`{ok,latency_ms,model,reply?|error?}` |
@@ -326,3 +329,54 @@ backend/semantic/
 - P2-A:timelex 解析表 ≥20 例;时间/下钻端到端对拍 ≥6 条;报告含「10月下旬数码客单价 vs 上旬」的完整对拍数字
 - P2-B:检索单测 ≥10 例;前端 build 通过;报告含 3 个检索查询的实际 top-k
 - 主控浏览器实测:3 条新问法(旬对比/商品下钻/检索面板)+ 提交
+
+## 17. Phase 3 · 分析类场景扩容(§16.5,语义层 v15)
+
+> 目标:兑现 docs/04 的「分析助手 vs Text-to-SQL 工具」分水岭 —— 把 M4 变化贡献排名、
+> M5 归因泛化(比率+可加指标)、「为什么」多轮追问升级做成自由提问能力,并把分析类
+> 问法纳入场景矩阵与 golden 评测。
+> **回归铁律不变**:既有 276 项单测 PASS、既有 21 题 eval 全过(扩容后 26/26)、
+> 现有问法命中行为不变(退款率归因/新老客对比/当期排名逐字保留)。
+
+### 17.1 归因泛化(app/engine/attribution.py)
+- 模块级 `ATTR_SPECS`(归因指标规格,与语义层 agg 一致性由单测锁定):
+  - 比率型(分母按维度可加,rate×share 精确可加分解,Σ贡献≡整体Δ):refund_rate(den=GMV)、refund_order_rate / new_order_ratio(den=订单数)
+  - 可加型(贡献=两期绝对差):gmv / refund_amt / order_cnt / item_cnt / refund_order_cnt / new_order_cnt
+- **边界(诚实性)**:分母为去重计数的指标(arppu ÷ 去重人数、pay_user_cnt)**不纳入归因**
+  ——去重数跨维度不可加,分解残差失真;其「为什么」问法由 summary+环比叙事承接
+- `compute(metric_key=...)` 参数化;refund_rate 路径数值与 v1 逐位一致(单测锁定)
+- 口径守卫:「新客占比」问法的「新客」词会误挂 user_type=新客(指标恒 100%),
+  由编排层 `_answer_path` 统一剥离并在叙事注明(同时拦 LLM IR,单一剥离点)
+
+### 17.2 变化贡献排名(M4,docs/04 Q4)
+- 触发:排名词 + 变化排名句式(delta_rank:下降最明显/上升最多/变化最大/贡献最大…)→
+  rank 卡 + IR `compare=prev_period`
+- **仅类目/渠道维**:两窗全量 ≤ LIMIT,合并精确;商品维会被 LIMIT 截断(「下滑王」
+  可能不在当期 TOP-N),不支持(商品问法仍走当期排名)
+- 输出:变化额按方向排序(下降=Δ升序)、表列 上期/本期/变化/贡献占比(占比仅可加指标
+  且整体变化非零时)、KPI「{指标}{方向}最明显的{维度}」;比率指标呈现 pp 变化、无占比列
+
+### 17.3 分析追问与 LLM 逃生口守卫
+- 「那为什么…呢」追问:规则层 followup 分支带 `why_attr` 标记,编排层在继承上一轮
+  指标/筛选后将 summary 升级为 attribution(doc 04 §5「『为什么』继承主题升级 M5」)
+- LLM 逃生口守卫:规则已识别 why 问法时,LLM 的 unsupportable/clarify 不得覆盖
+  (归因是确定性分析模式;U01 跨类目对比等不可表达场景不含 why 词,行为不变)
+
+### 17.4 compare 指标感知
+- 问句指定指标(退款率/退款金额/支付件数/支付人数/订单退款率)时,compare 卡追加该
+  指标的分组序列/表列/叙事(含两期变化句);默认四件套不变(既有 compare 场景零回归)
+
+### 17.5 评测与场景矩阵
+- golden_qa 21 → **26**(新增:退款金额归因/新客占比归因/订单退款率归因/GMV 变化排名/
+  新老客退款率对比;ref_sql 种子期实时计算)
+- 场景矩阵 52 → **63**(⑨归因 5 / ⑩变化排名 4 / ⑪分析追问 2);
+  `scripts/scenario_matrix.py --out demo/docs/scenario-matrix-report.json` 归档
+- 单测 276 → **301+**(test_attribution.py:规格一致性/Σ贡献≡Δ 恒等式/refund_rate v1
+  逐位对拍/可加恒等式/美妆 scoped 对拍/新卡 E2E×5)
+
+### 17.6 验收
+- run_tests.sh 全 PASS;eval 26/26(规则模式当场验证;LLM 模式待 token 后复核)
+- 场景矩阵:⑨⑩⑪ 全过 + 既有 52 场景不回归(LLM 模式归档报告)
+- 语义版本登记 v15(terms.yml intent.why/delta_rank;semantic_version 快照)
+- 不做(数据诚实边界):M6 漏斗、M8 广告相关性(库中无流量/广告数据,fact_traffic 仅占位);
+  趋势日级异常点检测(种子故事无日级拐点)
