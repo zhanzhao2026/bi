@@ -244,18 +244,20 @@ class Orchestrator:
                                 llm_used = True
                                 llm_model = self.gateway.get_config().get("model")
                     elif isinstance(llm_ir, dict) and llm_ir.get("meta"):
-                        # 逃生口3(§17):问候/身份/能力类对话(「你是谁」「你能做什么」)
-                        # → 确定性自我介绍卡(内容固定、无数字,不经 LLM 叙述,零幻觉)。
-                        # 守卫(v17 推广):规则已解析出可回答的数据问题时按规则作答
-                        # (「你好,最近GMV怎么样」是问数,不出自我介绍)
-                        if parsed.get("ok"):
-                            logger.info("llm meta ignored: rules parsed an answerable question")
-                        else:
-                            card = self._meta_card(trace_id)
-                            status = "ok"
-                            ir = None
-                            llm_used = True
-                            llm_model = self.gateway.get_config().get("model")
+                        # 逃生口3(§17):问候/身份/能力/口径类对话(「你是谁」
+                        # 「能查到什么范围」「GMV的口径是什么」)→ 确定性自我介绍卡
+                        # (内容固定、无数字,不经 LLM 叙述,零幻觉)。
+                        # LLM 判定恒生效(v17.1):能力/口径意图是开放域判断,规则
+                        # 关键词命中(如「gmv可以查询的数据范围」命中 gmv)不代表
+                        # 数据意图——实测守卫丢弃 LLM 的正确 meta 判定 → 答非所问。
+                        # 「带数据意图的问候是问数」由提示词/示例约束 LLM 自行区分。
+                        card = self._meta_card(
+                            trace_id,
+                            parsed.get("metric") if isinstance(parsed.get("metric"), str) else None)
+                        status = "ok"
+                        ir = None
+                        llm_used = True
+                        llm_model = self.gateway.get_config().get("model")
                     elif llm_ir is not None:
                         cand = compiler.normalize_ir(llm_ir)
                         ok, err = compiler.validate_ir(cand, self.semantic, options)
@@ -1541,9 +1543,11 @@ class Orchestrator:
         c["followups"] = []
         return c
 
-    def _meta_card(self, trace_id: str) -> dict:
-        """身份/问候/能力/数据范围类问题(「你是谁」「能查到什么范围」)→
-        自我介绍卡(规则确定性,不走 LLM);含数据覆盖行,能力询问一并答到位。"""
+    def _meta_card(self, trace_id: str, metric_key: str | None = None) -> dict:
+        """身份/问候/能力/数据范围/口径类问题(「你是谁」「能查到什么范围」
+        「GMV的口径是什么」)→ 自我介绍卡(规则确定性,不走 LLM 叙述)。
+        问句点名了指标时附该指标的口径行(渲染自语义层 metrics 配置,
+        无需新增配置);含数据覆盖行,能力/范围/口径询问一并答到位。"""
         c = self._base_card("summary", trace_id, "我是 BizInsight 经营分析助手")
         c["narrative"] = [
             "我负责回答交易域的经营数据问题:GMV、订单数、支付人数、客单价、支付件数、退款金额/退款率、新客占比等。",
@@ -1551,13 +1555,20 @@ class Orchestrator:
             "薪酬等敏感信息、订单明细、语义层没有的指标,我会坦诚拒答而不是编一个数。",
         ]
         try:
+            insert_at = 1
+            m = ((self.semantic.metrics or {}).get(metric_key) if metric_key else None)
+            if m:
+                c["narrative"].insert(
+                    0, f"「{m.get('name', metric_key)}」的口径:{m.get('plain', '')}"
+                       f"(单位:{m.get('unit', '')}),支持按类目/渠道/新老客拆分与两期对比。")
+                insert_at = 2
             start_s, asof_s = get_data_start(), get_data_as_of()
             if start_s and asof_s:
                 s_d = dt.date.fromisoformat(str(start_s)[:10])
                 a_d = dt.date.fromisoformat(str(asof_s)[:10])
                 c["narrative"].insert(
-                    1, f"数据覆盖 {s_d.isoformat()} ~ {a_d.isoformat()}(共 {(a_d - s_d).days + 1} 天),"
-                       f"更早时段暂无数据;时间最多可以查到 {a_d.isoformat()}。")
+                    insert_at, f"数据覆盖 {s_d.isoformat()} ~ {a_d.isoformat()}(共 {(a_d - s_d).days + 1} 天),"
+                               f"更早时段暂无数据;时间最多可以查到 {a_d.isoformat()}。")
         except Exception:
             pass
         c["followups"] = ["最近30天的整体经营情况", "近30天退款率为什么上升",

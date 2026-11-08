@@ -506,17 +506,29 @@ class TestEscapeGuardsE2E(unittest.TestCase):
         self.assertTrue(any("美妆" in n for n in (card.get("narrative") or [])))
         self.assertEqual("ok", done.get("status"))
 
-    def test_llm_meta_ignored_when_rules_ok(self):
-        """「问候+数据意图」且规则可解析 → 按规则作答,不出自我介绍卡。"""
+    def test_llm_meta_metric_aware_intro(self):
+        """含指标词的能力/口径询问(「gmv可以查询的数据范围」)→ LLM 判定 meta
+        恒生效(规则关键词命中不代表数据意图,实测守卫丢弃正确 meta → 答非所问);
+        介绍卡指标感知:附该指标口径行(渲染自语义层 metrics 配置)+ 数据覆盖行。"""
         from app.engine.orchestrator import Orchestrator
         orch = Orchestrator()
         orch.gateway.enabled = lambda: True
         orch.gateway.plan_ir = lambda *a, **k: {"meta": True}
-        orch.gateway.narrate = lambda payload: None
-        card, _raw, done = orch.run_once("最近30天GMV是多少", "ceo")
+        card, _raw, done = orch.run_once("gmv可以查询的数据范围是", "ceo")
         self.assertEqual("summary", card.get("type"))
-        self.assertIn("GMV", card.get("title") or "")
         self.assertEqual("ok", done.get("status"))
+        text = " ".join(card.get("narrative") or [])
+        self.assertIn("口径", text, f"介绍卡应含 GMV 口径行: {card.get('narrative')}")
+        self.assertIn("用户付款成功的总金额", text, "口径行应渲染自语义层 metrics.plain")
+        self.assertIn("数据覆盖", text)
+
+    def test_meta_card_plain_intro(self):
+        """未点名指标的 meta(你是谁)→ 通用介绍卡(职责行在前,含覆盖行)。"""
+        from app.engine.orchestrator import Orchestrator
+        orch = Orchestrator()
+        card = orch._meta_card("tr_m1")
+        self.assertTrue((card.get("narrative") or [])[0].startswith("我负责回答交易域"))
+        self.assertTrue(any(n.startswith("数据覆盖") for n in card.get("narrative") or []))
 
 
 if __name__ == "__main__":

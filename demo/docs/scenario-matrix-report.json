@@ -1,5 +1,5 @@
 {
- "ran_at": "2026-11-08 17:13:25",
+ "ran_at": "2026-11-08 17:51:58",
  "base": "http://127.0.0.1:8310",
  "asof": "2026-11-06",
  "summary": {
@@ -124,7 +124,7 @@
    "pass": true,
    "card_type": "summary",
    "ir": {
-    "metric": "gmv",
+    "metric": "order_cnt",
     "time": {
      "range": [
       "2026-11-04",
@@ -557,7 +557,7 @@
      "channel": [],
      "user_type": []
     },
-    "granularity": "none",
+    "granularity": "day",
     "compare": "none",
     "order": "desc",
     "limit": 10
@@ -1461,10 +1461,7 @@
     "filters": {
      "category": [],
      "channel": [
-      "付费推广",
-      "自然流量",
-      "私域",
-      "直播"
+      "付费推广"
      ],
      "user_type": []
     },
@@ -2292,7 +2289,7 @@
      "channel": [],
      "user_type": []
     },
-    "granularity": "none",
+    "granularity": "day",
     "compare": "prev_period",
     "order": "desc",
     "limit": 10
@@ -2378,7 +2375,7 @@
      "channel": [],
      "user_type": []
     },
-    "granularity": "day",
+    "granularity": "none",
     "compare": "prev_period",
     "order": "desc",
     "limit": 10
@@ -2630,7 +2627,7 @@
      "channel": [],
      "user_type": []
     },
-    "granularity": "none",
+    "granularity": "day",
     "compare": "none",
     "order": "desc",
     "limit": 10
