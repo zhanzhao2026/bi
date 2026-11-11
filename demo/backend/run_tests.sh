@@ -24,7 +24,7 @@ from app.core.db import query
 query('SELECT 1')
 " 2>/dev/null; then
   echo "[run_tests] 警告:数据库不可达(${BIZ_DB_HOST:-127.0.0.1}:${BIZ_DB_PORT:-3306}/biz_demo),依赖 DB 的用例将失败"
-  echo "[run_tests] 提示:MySQL 停了可执行 docker start hanzipress-mysql;首次建库执行 bash demo/db/run_all.sh"
+  echo "[run_tests] 提示:MySQL 停了可执行 docker start <容器名>(docker ps -a 可查);首次建库执行 bash demo/db/run_all.sh"
 fi
 
 echo "[run_tests] 运行: $PY -m unittest discover -s tests -v"

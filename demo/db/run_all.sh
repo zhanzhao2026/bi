@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-PY="/home/link/code/bi/demo/backend/.venv/bin/python"
+PY="$(cd "$(dirname "$0")/../backend" && pwd)/.venv/bin/python"
 
 echo "==> [1/3] init_db.py(建库 biz_demo + 授权 appuser + 重建全部表)"
 "$PY" init_db.py

@@ -7,7 +7,7 @@
 
 | 项 | 值 |
 |---|---|
-| MySQL | Docker 容器 `hanzipress-mysql`(mysql:8.4.11),`127.0.0.1:3306`,已运行 |
+| MySQL | 本机 Docker 容器(mysql:8.4.x),`127.0.0.1:3306`,已运行(连接参数可经 `backend/.env` 覆盖) |
 | 管理账号 | `root` / `root`(仅初始化用) |
 | 应用账号 | `appuser` / `apppass`(应用运行时使用,`init_db.py` 负责 GRANT) |
 | Python | 3.14.4(系统无 pip,venv 已建好:`/home/link/code/bi/demo/backend/.venv`,内含 pip) |

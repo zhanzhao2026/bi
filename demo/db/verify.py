@@ -10,8 +10,9 @@ import time
 
 import pymysql
 
-DB = dict(host="127.0.0.1", port=3306, user="appuser", password="apppass",
-          database="biz_demo", charset="utf8mb4")
+import dbenv
+
+DB = dbenv.APP
 
 L0, L1 = "2026-10-08", "2026-11-06"    # last30
 P0, P1 = "2026-09-08", "2026-10-07"    # prior30

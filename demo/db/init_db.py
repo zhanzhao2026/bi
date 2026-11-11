@@ -2,20 +2,25 @@
 # -*- coding: utf-8 -*-
 """初始化 biz_demo 数据库:建库、授权、按契约 §2.2 重建全部表。
 
-使用 root 连 127.0.0.1:3306(仅本脚本用 root);应用运行时统一用 appuser/apppass。
+使用 root 连库(仅本脚本用 root,连接配置见 dbenv.py);应用运行时统一用应用账号。
 可重复执行(DROP TABLE IF EXISTS + CREATE)。
 """
 import pymysql
 
-ROOT = dict(host="127.0.0.1", port=3306, user="root", password="root", charset="utf8mb4")
+import dbenv
+
+ROOT = dbenv.ROOT
+DB_NAME = dbenv.NAME
+APP_USER = dbenv.APP_USER
+APP_PASS_SQL = dbenv.APP_PASS_SQL
 
 # 契约 §2.1:建库 + 应用账号
-SQL_DB = ("CREATE DATABASE IF NOT EXISTS biz_demo "
+SQL_DB = (f"CREATE DATABASE IF NOT EXISTS {DB_NAME} "
           "DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
 SQL_USER = [
-    "CREATE USER IF NOT EXISTS 'appuser'@'%' IDENTIFIED BY 'apppass'",
-    "ALTER USER 'appuser'@'%' IDENTIFIED BY 'apppass'",
-    "GRANT ALL ON biz_demo.* TO 'appuser'@'%'",
+    f"CREATE USER IF NOT EXISTS '{APP_USER}'@'%' IDENTIFIED BY '{APP_PASS_SQL}'",
+    f"ALTER USER '{APP_USER}'@'%' IDENTIFIED BY '{APP_PASS_SQL}'",
+    f"GRANT ALL ON {DB_NAME}.* TO '{APP_USER}'@'%'",
     "FLUSH PRIVILEGES",
 ]
 
@@ -148,7 +153,7 @@ def main() -> None:
             cur.execute(SQL_DB)
             for sql in SQL_USER:
                 cur.execute(sql)
-            cur.execute("USE biz_demo")
+            cur.execute(f"USE {DB_NAME}")
             # 先 DROP(逆序),再 CREATE,保证可重复执行
             for name, _ in reversed(TABLES):
                 cur.execute(f"DROP TABLE IF EXISTS {name}")
@@ -160,13 +165,12 @@ def main() -> None:
         conn.close()
 
     # 用应用账号验证连通
-    app = pymysql.connect(host="127.0.0.1", port=3306, user="appuser",
-                          password="apppass", database="biz_demo", charset="utf8mb4")
+    app = pymysql.connect(**dbenv.APP)
     with app.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='biz_demo'")
+        cur.execute("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema=%s", (DB_NAME,))
         n = cur.fetchone()[0]
     app.close()
-    print(f"[init] database biz_demo ready, appuser ok, tables={n}")
+    print(f"[init] database {DB_NAME} ready, {APP_USER} ok, tables={n}")
 
 
 if __name__ == "__main__":

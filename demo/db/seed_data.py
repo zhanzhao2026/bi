@@ -24,8 +24,9 @@ from datetime import date, timedelta
 
 import pymysql
 
-DB = dict(host="127.0.0.1", port=3306, user="appuser", password="apppass",
-          database="biz_demo", charset="utf8mb4")
+import dbenv
+
+DB = dbenv.APP
 
 SEED = 42
 START = date(2026, 8, 9)

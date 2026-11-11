@@ -51,9 +51,10 @@ token 只存本地(sys_settings 表),接口对外仅回掩码。
 
 ## 4. 运维备忘
 
+- **数据库连接可配置**:后端、`db/` 脚本(reset_db.sh 全链路)、`migrate_v1x.py` 统一读 `demo/backend/.env`,同名环境变量可临时覆盖,缺省值为契约默认(`127.0.0.1:3306` / 库名 `biz_demo` / 应用账号 `appuser/apppass` / root `root/root`)。可配项:`BIZ_DB_HOST` `BIZ_DB_PORT` `BIZ_DB_NAME` `BIZ_DB_USER` `BIZ_DB_PASS` `BIZ_DB_ROOT_USER` `BIZ_DB_ROOT_PASS`(root 仅建库建号用)。复用本机已有 MySQL 实例时,改 `.env` 即可,无需改代码
 - 重建库:`demo/scripts/reset_db.sh`(DROP 重建,自动恢复种子数据与演示审计记录;**会同时清掉界面配置的 LLM token,需在系统设置重填**)
 - 后端日志:`/tmp/biz_demo_logs/backend.log`;健康检查:`curl 127.0.0.1:8310/api/health`
-- MySQL 停了:`docker start hanzipress-mysql`
+- MySQL 停了:`docker start <容器名>`(用 `docker ps -a` 查,本机为 `mysql-local`)
 - 评测:管理后台「评测」页运行(golden_qa 26 条:10 value + 2 trend + 3 rank + 3 compare + 5 attribution + 3 守卫)
 - 场景矩阵:cd demo/backend && .venv/bin/python scripts/scenario_matrix.py --out docs/scenario-matrix-report.json(63 场景 × 11 组,LLM 模式)
 - 指标测试:bash demo/backend/run_tests.sh(语义层守门,改 metric/术语必跑;301 项)
